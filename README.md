@@ -85,6 +85,38 @@ base64 butuh seluruh byte.
 
 ---
 
+## Seberapa setia ke Cartesia?
+
+Tidak semuanya klon. Ini pemetaannya, supaya tidak ada yang dikira passthrough padahal bukan:
+
+| Di sini | Padanan Cartesia | Sifat |
+|---|---|---|
+| `POST /v1/audio/speech` | `POST /tts/bytes` | **Diadaptasi.** Byte audionya identik; bentuk request dan envelope-nya milik OpenAI. |
+| `GET /v1/audio/voices` | `GET /voices` | **Passthrough.** Objek voice diteruskan apa adanya, termasuk field yang alat ini tidak pakai. |
+| `GET /v1/audio/voices/{id}/preview` | `preview_file_url` | **Diadaptasi.** Server yang mengambil berkasnya, karena URL itu butuh header Authorization. |
+| `GET /v1/models` | tidak ada | Milik alat ini. Cartesia tidak punya endpoint katalog model. |
+| Body error | bentuk error Cartesia | **Diganti** dengan envelope `{"error":{"message","type"}}`. |
+
+**Yang berbeda pada request.** Bentuk yang diterima adalah milik OpenAI, bukan Cartesia: `input` →
+`transcript`, `voice` berupa string (bukan objek), dan `response_format` string (`opus`/`aac`/`flac`
+ditolak) → objek `output_format` dengan `container`, `sample_rate`, dan `bit_rate`/`encoding` yang
+wajib. Query `?response_format=json` juga bukan milik Cartesia — itu konvensi 9router.
+
+**Yang berbeda pada response suara.** Byte-nya sama; yang dipetakan hanya `Content-Type`
+(`audio/mpeg`, `audio/wav`, `audio/pcm`). `Content-Length` tidak dikirim (respons mengalir/chunked),
+dan header lain dari Cartesia — termasuk request id dan header rate limit — tidak diteruskan.
+
+**Yang berbeda pada status.** `400`, `402`, `404`, `422`, dan `429` diteruskan apa adanya. `401` dan
+`403` **tidak**: itu masalah kredensial di sisi gateway, bukan di sisi klien, jadi jadi `502`. `5xx`
+dan kegagalan jaringan juga `502`.
+
+**Yang belum diverifikasi.** Skema error Cartesia sendiri belum pernah saya lihat langsung —
+dokumentasinya di balik login dan saya belum punya key. Karena body error-nya memang diganti dengan
+envelope sendiri, yang hilang adalah struktur aslinya; teks pesannya tetap diteruskan utuh di dalam
+`message`, dan tersimpan juga di kolom Error pada tabel riwayat.
+
+---
+
 ## Konfigurasi
 
 Flag, dengan padanan environment variable:

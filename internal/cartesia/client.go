@@ -69,22 +69,37 @@ func (c *Client) Synthesize(ctx context.Context, apiKey string, req SynthesisReq
 	return resp, nil
 }
 
-// VoicesPage is GET /voices as far as this gateway consumes it.
+// VoicesPage is GET /voices. Data is kept raw so every field Cartesia returns
+// reaches the client — including the ones this gateway has no opinion about
+// (status, visibility, tagline, accents, is_pro) and any field Cartesia adds
+// later. Decoding into a narrower struct would silently drop them.
 type VoicesPage struct {
-	Data     []Voice `json:"data"`
-	HasMore  bool    `json:"has_more"`
-	NextPage *string `json:"next_page"`
+	Data     []json.RawMessage `json:"data"`
+	HasMore  bool              `json:"has_more"`
+	NextPage *string           `json:"next_page"`
 }
 
-// Voice is one entry of GET /voices.
-type Voice struct {
+// VoiceRef is the subset the gateway itself needs: the id it addresses a voice
+// by, and the preview URL it fetches on the client's behalf.
+type VoiceRef struct {
 	ID             string  `json:"id"`
 	Name           string  `json:"name"`
-	Description    string  `json:"description"`
-	Gender         string  `json:"gender"`
 	Language       string  `json:"language"`
-	IsOwner        bool    `json:"is_owner"`
 	PreviewFileURL *string `json:"preview_file_url"`
+}
+
+// Refs projects the raw page onto the fields this process reads. Entries that
+// do not decode are skipped rather than failing the whole listing.
+func (p VoicesPage) Refs() []VoiceRef {
+	refs := make([]VoiceRef, 0, len(p.Data))
+	for _, raw := range p.Data {
+		var ref VoiceRef
+		if err := json.Unmarshal(raw, &ref); err != nil {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 // ListVoices calls GET /voices. query is forwarded verbatim after validation

@@ -394,6 +394,52 @@ func TestVoicePreviewStreamsFromCartesia(t *testing.T) {
 	}
 }
 
+// The voice listing is a pass-through, not a projection: a client that talks
+// to this gateway instead of Cartesia must see the same object it would have
+// seen from Cartesia.
+func TestVoicesResponseKeepsEveryUpstreamField(t *testing.T) {
+	upstreamBody := `{"data":[{"id":"v-1","is_owner":false,"status":"active","access":"public",
+		"visibility":"all","name":"Skylar","tagline":"Friendly Guide","description":"Approachable",
+		"created_at":"2026-03-31T17:37:05Z","language":"en","gender":"feminine","is_pro":true,
+		"accents":[{"accent":"general-american","locale":"en-US","is_native":true}],"country":"US",
+		"preview_file_url":null}],"has_more":true,"next_page":"v-1"}`
+	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
+		return http.StatusOK, upstreamBody, nil
+	}}
+	_, st, server := newServer(t, upstream, "")
+	addKey(t, st, "primary", "sk_car_primary")
+
+	resp, err := http.Get(server.URL + "/v1/audio/voices")
+	if err != nil {
+		t.Fatalf("GET voices error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	var page struct {
+		Data []map[string]any `json:"data"`
+		More bool             `json:"has_more"`
+		Next *string          `json:"next_page"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatalf("decode voices error = %v", err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("voices returned = %d, want 1", len(page.Data))
+	}
+	for _, field := range []string{
+		"id", "is_owner", "status", "access", "visibility", "name", "tagline",
+		"description", "created_at", "language", "gender", "is_pro", "accents", "country",
+		"preview_file_url",
+	} {
+		if _, ok := page.Data[0][field]; !ok {
+			t.Errorf("voice field %q was dropped from the response", field)
+		}
+	}
+	if !page.More || page.Next == nil || *page.Next != "v-1" {
+		t.Errorf("pagination = (has_more %v, next_page %v), want (true, v-1)", page.More, page.Next)
+	}
+}
+
 func assertQuery(t *testing.T, call recorded, key, want string) {
 	t.Helper()
 	if got := call.Query.Get(key); got != want {

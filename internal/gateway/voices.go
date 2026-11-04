@@ -204,7 +204,7 @@ func (s *Server) resolvePreviewURL(ctx context.Context, voiceID string) (string,
 	if err != nil {
 		return "", err
 	}
-	for _, voice := range page.Data {
+	for _, voice := range page.Refs() {
 		if voice.ID == voiceID && voice.PreviewFileURL != nil {
 			return *voice.PreviewFileURL, nil
 		}
