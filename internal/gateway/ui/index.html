@@ -3,539 +3,147 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>cartesia-gw</title>
-<style>
-  /* No external font or script: the page must render on a host with no
-     outbound access, and a blocked CDN must never be able to hide it. */
-  :root {
-    color-scheme: light dark;
-    --bg: #f6f5f3; --surface: #fff; --surface-2: #f1efec;
-    --border: #e2ded7; --text: #1d1b18; --muted: #6f6862;
-    --accent: #ff4f8b; --accent-soft: #ffe6ee;
-    --ok: #17845a; --warn: #a4651a; --err: #b3271f;
-    --radius: 10px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16151a; --surface: #1d1c22; --surface-2: #24232a;
-      --border: #322f38; --text: #ece9ef; --muted: #9b95a3;
-      --accent: #ff6b9d; --accent-soft: #3a2230;
-      --ok: #4ec38d; --warn: #e0a458; --err: #ff7a70;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  header {
-    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
-    padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
-    position: sticky; top: 0; z-index: 5;
-  }
-  h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
-  h1 span { color: var(--accent); }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
-    background: var(--surface-2); font-size: 12px; color: var(--muted); white-space: nowrap;
-  }
-  .chip b { color: var(--text); font-weight: 600; }
-  main { max-width: 1080px; margin: 0 auto; padding: 20px; display: grid; gap: 20px; }
-  section {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 16px;
-  }
-  section > h2 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .grow { flex: 1 1 200px; min-width: 0; }
-  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
-  input, select, textarea, button {
-    font: inherit; color: var(--text); background: var(--surface-2);
-    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; width: 100%;
-  }
-  textarea { min-height: 84px; resize: vertical; }
-  button {
-    width: auto; cursor: pointer; background: var(--accent); border-color: transparent;
-    color: #fff; font-weight: 600; padding: 7px 14px;
-  }
-  button.ghost { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 500; }
-  button.tiny { padding: 3px 8px; font-size: 12px; }
-  button:disabled { opacity: .55; cursor: default; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
-  td.mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .pill.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
-  .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
-  .pill.err { background: color-mix(in srgb, var(--err) 16%, transparent); color: var(--err); }
-  .muted { color: var(--muted); }
-  .err-text { color: var(--err); font-size: 12px; }
-  pre {
-    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 10px; overflow-x: auto; font-size: 12px; margin: 0;
-  }
-  .banner {
-    display: none; gap: 10px; align-items: center; padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    border-radius: var(--radius); font-size: 13px;
-  }
-  .banner.show { display: flex; }
-  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
-  .toast {
-    position: fixed; right: 16px; bottom: 16px; max-width: 360px;
-    padding: 10px 14px; border-radius: 8px; background: var(--surface);
-    border: 1px solid var(--border); box-shadow: 0 6px 24px rgb(0 0 0 / .12);
-    font-size: 13px; opacity: 0; transform: translateY(8px);
-    transition: opacity .15s, transform .15s; pointer-events: none;
-  }
-  .toast.show { opacity: 1; transform: none; }
-  .toast.bad { border-color: color-mix(in srgb, var(--err) 50%, transparent); color: var(--err); }
-  @media (max-width: 640px) {
-    .hide-sm { display: none; }
-    main { padding: 12px; }
-  }
-</style>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<header>
-  <h1><span>cartesia</span>-gw</h1>
+<header class="topbar">
+  <div class="brand"><span class="mark"></span>cartesia<span class="accent">-gw</span></div>
   <div class="chips" id="chips"></div>
 </header>
 
-<main>
-  <div class="banner" id="tokenBanner">
-    <b>Gateway token required.</b>
-    <input id="tokenInput" type="password" placeholder="paste the -gateway-token value" style="max-width:280px">
-    <button class="ghost" id="tokenSave">Save</button>
-  </div>
+<div class="tokenbar" id="tokenBanner" hidden>
+  <span class="material">Gateway token required.</span>
+  <input id="tokenInput" type="password" placeholder="tempel nilai -gateway-token" autocomplete="off">
+  <button class="btn ghost tiny" id="tokenSave">Simpan</button>
+</div>
 
-  <section id="keysSection">
-    <h2>API keys</h2>
-    <div class="row">
-      <div class="grow"><label for="keyLabel">Label</label>
-        <input id="keyLabel" placeholder="mis. cartesia-utama"></div>
-      <div class="grow"><label for="keySecret">Cartesia API key (sk_car_…)</label>
-        <input id="keySecret" type="password" autocomplete="off"></div>
-      <button id="keyAdd">Tambah</button>
-    </div>
-    <div id="keysTable"></div>
-  </section>
+<main class="workspace">
 
-  <section id="playground">
-    <h2>Playground</h2>
+  <section class="panel controls" aria-labelledby="controlsTitle">
+    <h2 id="controlsTitle">Synthesize</h2>
+
     <div class="row">
-      <div class="grow"><label for="model">Model</label><select id="model"></select></div>
-      <div class="grow"><label for="format">Format</label>
+      <div class="field">
+        <label for="model">Model</label>
+        <select id="model"></select>
+      </div>
+      <div class="field">
+        <label for="format">Format</label>
         <select id="format">
           <option value="mp3">mp3</option>
           <option value="wav">wav</option>
           <option value="pcm">pcm (raw s16le)</option>
-        </select></div>
-      <div class="grow"><label for="speed">Speed (0.6–1.5, opsional)</label>
-        <input id="speed" type="number" min="0.6" max="1.5" step="0.1" placeholder="1.0"></div>
+        </select>
+      </div>
     </div>
-    <div class="row" style="margin-top:10px">
-      <div class="grow"><label for="voiceSearch">Cari voice</label>
-        <input id="voiceSearch" placeholder="nama, deskripsi, atau id"></div>
-      <div class="grow"><label for="lang">Bahasa</label>
-        <input id="lang" placeholder="en, id, es-MX …"></div>
-      <div class="grow" style="align-self:flex-end">
-        <button class="ghost" id="voiceRefresh">Muat voice</button></div>
+
+    <div class="voice-picked" id="voicePicked">
+      <div class="vp-text">
+        <span class="vp-label">Voice</span>
+        <strong id="voiceName">belum dipilih</strong>
+        <span class="muted" id="voiceMeta"></span>
+      </div>
+      <button class="btn ghost tiny" id="voicePlaySelected" title="Putar contoh suara" disabled>Putar</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <div class="grow"><label for="voice">Voice</label><select id="voice"></select></div>
-      <div style="align-self:flex-end"><button class="ghost" id="voicePreview">Preview</button></div>
+
+    <div class="field">
+      <label for="text">Teks <span class="muted" id="charCount">0 karakter · 0 kata</span></label>
+      <textarea id="text" rows="6" spellcheck="false">Halo, ini uji suara dari cartesia-gw.</textarea>
     </div>
-    <div style="margin-top:10px">
-      <label for="text">Teks</label>
-      <textarea id="text">Halo, ini uji suara dari cartesia-gw.</textarea>
+
+    <div class="row">
+      <div class="field">
+        <label for="speed">Speed <output id="speedOut">1.00</output></label>
+        <input id="speed" type="range" min="0.6" max="1.5" step="0.05" value="1">
+      </div>
+      <div class="field">
+        <label for="volume">Volume <output id="volumeOut">1.00</output></label>
+        <input id="volume" type="range" min="0.5" max="2" step="0.05" value="1">
+      </div>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button id="speak">Synthesize</button>
-      <button class="ghost" id="download">Unduh</button>
-      <span class="muted" id="speakStatus"></span>
+
+    <div class="field">
+      <label for="emotion">Emotion</label>
+      <select id="emotion"></select>
     </div>
-    <div id="audioWrap" style="margin-top:12px; display:none">
-      <audio id="audio" controls style="width:100%"></audio>
+
+    <div class="actions">
+      <button class="btn primary" id="speak">Generate</button>
+      <button class="btn ghost" id="stop" disabled>Stop</button>
+      <button class="btn ghost" id="download" disabled>Unduh</button>
     </div>
-    <div style="margin-top:12px">
-      <label>panggilan setara</label>
+    <p class="status muted" id="speakStatus"></p>
+
+    <audio id="audio" controls preload="metadata" hidden></audio>
+
+    <details class="curl">
+      <summary>panggilan setara</summary>
       <pre id="curl"></pre>
+    </details>
+  </section>
+
+  <section class="panel library" aria-labelledby="libraryTitle">
+    <div class="panel-head">
+      <h2 id="libraryTitle">Voice library</h2>
+      <span class="muted" id="voiceCount"></span>
+    </div>
+
+    <div class="filters">
+      <input id="voiceSearch" type="search" placeholder="Cari nama, deskripsi, atau id…" autocomplete="off">
+      <input id="langFilter" placeholder="Bahasa (en, id, es-MX)" autocomplete="off" spellcheck="false">
+      <select id="genderFilter">
+        <option value="">Semua gender</option>
+        <option value="masculine">Masculine</option>
+        <option value="feminine">Feminine</option>
+        <option value="gender_neutral">Gender neutral</option>
+      </select>
+    </div>
+
+    <div class="voice-list" id="voiceList" role="listbox" aria-label="Daftar voice"></div>
+
+    <div class="panel-foot">
+      <button class="btn ghost tiny" id="loadMore" hidden>Muat lagi</button>
+      <button class="btn ghost tiny" id="voiceRefresh">Muat ulang</button>
     </div>
   </section>
 
-  <section id="usage">
-    <h2>Riwayat</h2>
-    <div id="usageTable"></div>
-    <div class="row" style="margin-top:10px">
-      <button class="ghost tiny" id="pageNewer">← lebih baru</button>
+  <section class="panel span" aria-labelledby="usageTitle">
+    <div class="panel-head">
+      <h2 id="usageTitle">Riwayat</h2>
       <span class="muted" id="pageInfo"></span>
-      <button class="ghost tiny" id="pageOlder">lebih lama →</button>
+    </div>
+    <div id="usageTable"></div>
+    <div class="panel-foot">
+      <button class="btn ghost tiny" id="pageNewer">← lebih baru</button>
+      <button class="btn ghost tiny" id="pageOlder">lebih lama →</button>
     </div>
   </section>
+
+  <section class="panel span" aria-labelledby="keysTitle">
+    <div class="panel-head">
+      <h2 id="keysTitle">API keys</h2>
+      <span class="muted">dipakai bergiliran; yang gagal diparkir sementara</span>
+    </div>
+    <div class="row add-key">
+      <div class="field">
+        <label for="keyLabel">Label</label>
+        <input id="keyLabel" placeholder="mis. cartesia-utama" autocomplete="off">
+      </div>
+      <div class="field grow">
+        <label for="keySecret">Cartesia API key (sk_car_…)</label>
+        <input id="keySecret" type="password" autocomplete="off">
+      </div>
+      <button class="btn primary" id="keyAdd">Tambah</button>
+    </div>
+    <div id="keysTable"></div>
+  </section>
+
 </main>
 
-<div class="toast" id="toast"></div>
-
-<script>
-(() => {
-  'use strict';
-  const $ = (id) => document.getElementById(id);
-  const state = { overview: null, offset: 0, limit: 50, total: 0, needsToken: false, lastBlobUrl: null };
-
-  const tokenKey = 'cartesia-gw-token';
-  let token = localStorage.getItem(tokenKey) || '';
-
-  function toast(message, bad) {
-    const el = $('toast');
-    el.textContent = message;
-    el.className = 'toast show' + (bad ? ' bad' : '');
-    clearTimeout(el._t);
-    el._t = setTimeout(() => { el.className = 'toast' + (bad ? ' bad' : ''); }, 4000);
-  }
-
-  async function api(path, options) {
-    const opts = Object.assign({ headers: {} }, options || {});
-    if (token) {
-      opts.headers['Authorization'] = 'Bearer ' + token;
-      opts.headers['X-Gateway-Token'] = token;
-    }
-    if (opts.body && !opts.headers['Content-Type']) {
-      opts.headers['Content-Type'] = 'application/json';
-    }
-    const res = await fetch(path, opts);
-    if (res.status === 401) {
-      state.needsToken = true;
-      $('tokenBanner').classList.add('show');
-      throw new Error('gateway token required');
-    }
-    return res;
-  }
-
-  async function apiJSON(path, options) {
-    const res = await api(path, options);
-    const text = await res.text();
-    let body = null;
-    try { body = text ? JSON.parse(text) : null; } catch (_) { /* not json */ }
-    if (!res.ok) {
-      const message = (body && body.error && body.error.message) || text || ('HTTP ' + res.status);
-      throw new Error(message);
-    }
-    return body;
-  }
-
-  const fmtTime = (seconds) => seconds ? new Date(seconds * 1000).toLocaleString() : '—';
-  const fmtBytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
-    : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : (n || 0) + ' B';
-
-  function chip(label, value) {
-    return '<span class="chip">' + label + ' <b>' + value + '</b></span>';
-  }
-
-  function renderOverview() {
-    const o = state.overview;
-    if (!o) return;
-    const u = o.usage || {};
-    const k = o.keys || {};
-    const successRate = u.requests24h ? Math.round((u.success24h / u.requests24h) * 100) : null;
-    $('chips').innerHTML = [
-      chip('keys', (k.active || 0) + '/' + (k.total || 0)),
-      k.cooling ? chip('cooldown', k.cooling) : '',
-      chip('24 jam', (u.requests24h || 0) + ' req'),
-      successRate === null ? '' : chip('sukses', successRate + '%'),
-      chip('karakter', (u.charsToday || 0).toLocaleString()),
-      chip('latensi', (u.avgLatencyMs24h || 0) + ' ms'),
-      chip('versi', o.version),
-    ].join('');
-  }
-
-  function renderKeys(keys) {
-    if (!keys.length) {
-      $('keysTable').innerHTML = '<div class="empty">Belum ada key. Tambahkan satu di atas — '
-        + 'tanpa key, endpoint akan menjawab 503.</div>';
-      return;
-    }
-    const now = Math.floor(Date.now() / 1000);
-    const rows = keys.map((k) => {
-      const cooling = k.cooldownUntil > now;
-      const status = !k.isActive ? '<span class="pill err">nonaktif</span>'
-        : cooling ? '<span class="pill warn">cooldown ' + Math.ceil((k.cooldownUntil - now) / 60) + ' m</span>'
-        : '<span class="pill ok">siap</span>';
-      return '<tr>'
-        + '<td>' + escapeHTML(k.label || '(tanpa label)') + '</td>'
-        + '<td class="mono">' + escapeHTML(k.maskedSecret) + '</td>'
-        + '<td>' + status + (k.strikes ? ' <span class="muted">×' + k.strikes + '</span>' : '') + '</td>'
-        + '<td class="hide-sm muted">' + fmtTime(k.lastUsedAt) + '</td>'
-        + '<td class="hide-sm err-text">' + escapeHTML(k.lastError || '') + '</td>'
-        + '<td><div class="row">'
-        + '<button class="ghost tiny" data-act="reveal" data-id="' + k.id + '">lihat</button>'
-        + '<button class="ghost tiny" data-act="toggle" data-id="' + k.id + '" data-active="' + (k.isActive ? '1' : '0') + '">'
-        + (k.isActive ? 'nonaktifkan' : 'aktifkan') + '</button>'
-        + (cooling ? '<button class="ghost tiny" data-act="reset" data-id="' + k.id + '">reset</button>' : '')
-        + '<button class="ghost tiny" data-act="delete" data-id="' + k.id + '">hapus</button>'
-        + '</div></td>'
-        + '</tr>';
-    }).join('');
-    $('keysTable').innerHTML = '<table><thead><tr><th>Label</th><th>Key</th><th>Status</th>'
-      + '<th class="hide-sm">Terakhir dipakai</th><th class="hide-sm">Error</th><th></th></tr></thead>'
-      + '<tbody>' + rows + '</tbody></table>';
-  }
-
-  function escapeHTML(value) {
-    return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => (
-      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-  }
-
-  function renderRequests(body) {
-    const rows = body.data || [];
-    state.total = body.total || 0;
-    if (!rows.length) {
-      $('usageTable').innerHTML = '<div class="empty">Belum ada request.</div>';
-    } else {
-      $('usageTable').innerHTML = '<table><thead><tr><th>Waktu</th><th>Model</th><th>Voice</th>'
-        + '<th>Karakter</th><th class="hide-sm">Ukuran</th><th>Status</th><th class="hide-sm">Latensi</th>'
-        + '<th class="hide-sm">Error</th></tr></thead><tbody>'
-        + rows.map((r) => '<tr>'
-          + '<td class="hide-sm">' + fmtTime(r.ts) + '</td>'
-          + '<td class="mono">' + escapeHTML(r.model) + '</td>'
-          + '<td class="mono">' + escapeHTML(shortID(r.voiceId)) + '</td>'
-          + '<td>' + r.chars + '</td>'
-          + '<td class="hide-sm">' + (r.bytes ? fmtBytes(r.bytes) : '—') + '</td>'
-          + '<td>' + (r.status >= 200 && r.status < 300
-            ? '<span class="pill ok">' + r.status + '</span>'
-            : '<span class="pill err">' + r.status + '</span>') + '</td>'
-          + '<td class="hide-sm">' + r.latencyMs + ' ms</td>'
-          + '<td class="hide-sm err-text">' + escapeHTML((r.error || '').slice(0, 80)) + '</td>'
-        + '</tr>').join('')
-        + '</tbody></table>';
-    }
-    const from = state.total ? state.offset + 1 : 0;
-    const to = Math.min(state.offset + state.limit, state.total);
-    $('pageInfo').textContent = from + '–' + to + ' dari ' + state.total;
-    $('pageNewer').disabled = state.offset === 0;
-    $('pageOlder').disabled = state.offset + state.limit >= state.total;
-  }
-
-  const shortID = (id) => (id || '').length > 12 ? id.slice(0, 8) + '…' : (id || '');
-
-  async function loadOverview() {
-    state.overview = await apiJSON('/api/overview');
-    const model = $('model');
-    if (!model.options.length) {
-      model.innerHTML = state.overview.models.map((m) =>
-        '<option value="' + m + '"' + (m === state.overview.defaultModel ? ' selected' : '') + '>' + m + '</option>').join('');
-    }
-    renderOverview();
-    updateCurl();
-  }
-
-  async function loadKeys() {
-    const body = await apiJSON('/api/keys');
-    renderKeys(body.data || []);
-  }
-
-  async function loadRequests() {
-    const body = await apiJSON('/api/requests?limit=' + state.limit + '&offset=' + state.offset);
-    renderRequests(body);
-  }
-
-  async function loadVoices() {
-    const params = new URLSearchParams();
-    const q = $('voiceSearch').value.trim();
-    const lang = $('lang').value.trim();
-    if (q) params.set('q', q);
-    if (lang) params.set('language', lang);
-    const select = $('voice');
-    select.innerHTML = '<option value="">memuat…</option>';
-    try {
-      const body = await apiJSON('/api/voices?' + params.toString());
-      const voices = (body && body.data) || [];
-      if (!voices.length) {
-        select.innerHTML = '<option value="">tidak ada voice cocok</option>';
-        return;
-      }
-      select.innerHTML = voices.map((v) =>
-        '<option value="' + escapeHTML(v.id) + '">' + escapeHTML(v.name || v.id)
-        + (v.language ? ' · ' + escapeHTML(v.language) : '') + '</option>').join('');
-      updateCurl();
-    } catch (err) {
-      select.innerHTML = '<option value="">gagal memuat voice</option>';
-      toast(err.message, true);
-    }
-  }
-
-  function updateCurl() {
-    const model = $('model').value || 'sonic-3';
-    const voice = $('voice').value || '<voice-id>';
-    const format = $('format').value;
-    const origin = location.origin;
-    $('curl').textContent =
-      'curl -X POST ' + origin + '/v1/audio/speech \\\n'
-      + '  -H "Authorization: Bearer ' + (token ? '$GATEWAY_TOKEN' : '$GATEWAY_TOKEN') + '" \\\n'
-      + '  -H "Content-Type: application/json" \\\n'
-      + '  -d \'{"model":"' + model + '","input":"Halo dunia","voice":"' + voice + '","response_format":"' + format + '"}\' \\\n'
-      + '  --output speech.' + (format === 'pcm' ? 'pcm' : format);
-  }
-
-  async function speak() {
-    const voice = $('voice').value;
-    if (!voice) { toast('pilih voice dulu', true); return; }
-    const speedRaw = $('speed').value.trim();
-    const payload = {
-      model: $('model').value,
-      input: $('text').value,
-      voice: voice,
-      response_format: $('format').value,
-    };
-    if (speedRaw) payload.speed = Number(speedRaw);
-    const status = $('speakStatus');
-    status.textContent = 'menyintesis…';
-    try {
-      const res = await api('/api/test', { method: 'POST', body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
-      }
-      const blob = await res.blob();
-      setAudio(blob);
-      status.textContent = fmtBytes(blob.size) + ' · ' + $('format').value;
-      loadOverview().catch(() => {});
-      loadRequests().catch(() => {});
-    } catch (err) {
-      status.textContent = '';
-      toast(err.message, true);
-    }
-  }
-
-  function setAudio(blob) {
-    if (state.lastBlobUrl) URL.revokeObjectURL(state.lastBlobUrl);
-    state.lastBlobUrl = URL.createObjectURL(blob);
-    $('audio').src = state.lastBlobUrl;
-    $('audioWrap').style.display = 'block';
-    $('audio').play().catch(() => {});
-  }
-
-  async function download() {
-    const voice = $('voice').value;
-    if (!voice) { toast('pilih voice dulu', true); return; }
-    const format = $('format').value;
-    const payload = { model: $('model').value, input: $('text').value, voice: voice, response_format: format };
-    const speedRaw = $('speed').value.trim();
-    if (speedRaw) payload.speed = Number(speedRaw);
-    try {
-      const res = await api('/v1/audio/speech', { method: 'POST', body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'speech.' + (format === 'pcm' ? 'pcm' : format);
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      toast(err.message, true);
-    }
-  }
-
-  async function previewVoice() {
-    const voice = $('voice').value;
-    if (!voice) { toast('pilih voice dulu', true); return; }
-    try {
-      const res = await api('/v1/audio/voices/' + encodeURIComponent(voice) + '/preview');
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
-      }
-      setAudio(await res.blob());
-    } catch (err) {
-      toast(err.message, true);
-    }
-  }
-
-  async function addKey() {
-    const secret = $('keySecret').value.trim();
-    if (!secret) { toast('isi API key dulu', true); return; }
-    try {
-      await apiJSON('/api/keys', { method: 'POST', body: JSON.stringify({ label: $('keyLabel').value.trim(), secret: secret }) });
-      $('keySecret').value = '';
-      $('keyLabel').value = '';
-      toast('key tersimpan');
-      await refresh();
-    } catch (err) {
-      toast(err.message, true);
-    }
-  }
-
-  async function keyAction(button) {
-    const id = button.dataset.id;
-    const act = button.dataset.act;
-    try {
-      if (act === 'delete') {
-        if (!confirm('Hapus key ini?')) return;
-        await apiJSON('/api/keys/' + id, { method: 'DELETE' });
-      } else if (act === 'toggle') {
-        const active = button.dataset.active === '1';
-        await apiJSON('/api/keys/' + id, { method: 'PATCH', body: JSON.stringify({ isActive: !active }) });
-      } else if (act === 'reset') {
-        await apiJSON('/api/keys/' + id + '/reset', { method: 'POST' });
-      } else if (act === 'reveal') {
-        const body = await apiJSON('/api/keys/' + id + '/reveal');
-        await navigator.clipboard.writeText(body.secret).then(
-          () => toast('key disalin ke clipboard'),
-          () => toast('key: ' + body.secret + ' (salin manual)'));
-        return;
-      }
-      await refresh();
-    } catch (err) {
-      toast(err.message, true);
-    }
-  }
-
-  async function refresh() {
-    try {
-      await Promise.all([loadOverview(), loadKeys(), loadRequests()]);
-    } catch (err) {
-      if (!state.needsToken) toast(err.message, true);
-    }
-  }
-
-  function wire() {
-    $('keyAdd').addEventListener('click', addKey);
-    $('keySecret').addEventListener('keydown', (e) => { if (e.key === 'Enter') addKey(); });
-    $('keysTable').addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-act]');
-      if (button) keyAction(button);
-    });
-    $('voiceRefresh').addEventListener('click', loadVoices);
-    $('voiceSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadVoices(); });
-    $('voice').addEventListener('change', updateCurl);
-    $('model').addEventListener('change', updateCurl);
-    $('format').addEventListener('change', updateCurl);
-    $('speak').addEventListener('click', speak);
-    $('download').addEventListener('click', download);
-    $('voicePreview').addEventListener('click', previewVoice);
-    $('pageOlder').addEventListener('click', () => { state.offset += state.limit; loadRequests().catch((e) => toast(e.message, true)); });
-    $('pageNewer').addEventListener('click', () => { state.offset = Math.max(0, state.offset - state.limit); loadRequests().catch((e) => toast(e.message, true)); });
-    $('tokenSave').addEventListener('click', () => {
-      token = $('tokenInput').value.trim();
-      localStorage.setItem(tokenKey, token);
-      $('tokenBanner').classList.remove('show');
-      refresh();
-    });
-  }
-
-  wire();
-  refresh();
-  setInterval(() => { if (!document.hidden) refresh(); }, 30000);
-})();
-</script>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js" type="module"></script>
 </body>
 </html>

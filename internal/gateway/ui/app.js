@@ -1,0 +1,676 @@
+/* Dashboard for cartesia-gw. No framework and no imports: one file that the
+   embedded binary can serve without any build step. */
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+const TOKEN_KEY = 'cartesia-gw-token';
+const PREFS_KEY = 'cartesia-gw-prefs';
+
+let token = localStorage.getItem(TOKEN_KEY) || '';
+let overview = null;
+let audio = null;              // the generated clip, for download without re-billing
+let streamCtl = null;          // AbortController for an in-flight generation
+let streamUrl = null;          // object URL currently attached to the player
+const previewAudio = new Audio();
+let previewButton = null;
+
+const voiceState = { items: [], cursor: null, hasMore: false, loading: false, selected: null };
+const usageState = { offset: 0, limit: 50, total: 0 };
+
+/* ── preferences ─────────────────────────────────────────────────────────── */
+function loadPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return {}; }
+}
+function savePrefs(patch) {
+  localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch }));
+}
+
+/* ── small helpers ───────────────────────────────────────────────────────── */
+function toast(message, bad) {
+  const el = $('toast');
+  el.textContent = message;
+  el.className = 'toast show' + (bad ? ' bad' : '');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = 'toast' + (bad ? ' bad' : ''); }, 4200);
+}
+
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const fmtTime = (seconds) => seconds ? new Date(seconds * 1000).toLocaleString() : '—';
+const fmtBytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+  : n >= 1024 ? (n / 1024).toFixed(0) + ' KB' : (n || 0) + ' B';
+const shortID = (id) => (id || '').length > 14 ? id.slice(0, 8) + '…' : (id || '');
+const num = (id) => Number($(id).value);
+
+async function errorMessage(res) {
+  const text = await res.text().catch(() => '');
+  try {
+    const body = JSON.parse(text);
+    if (body?.error?.message) return body.error.message;
+  } catch { /* not json */ }
+  return text || `HTTP ${res.status}`;
+}
+
+/* ── transport ───────────────────────────────────────────────────────────── */
+async function api(path, options) {
+  const opts = { ...(options || {}), headers: { ...(options?.headers || {}) } };
+  if (token) {
+    opts.headers['Authorization'] = 'Bearer ' + token;
+    opts.headers['X-Gateway-Token'] = token;
+  }
+  if (opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, opts);
+  if (res.status === 401) {
+    $('tokenBanner').hidden = false;
+    throw new Error('gateway token required');
+  }
+  return res;
+}
+
+async function apiJSON(path, options) {
+  const res = await api(path, options);
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { /* not json */ }
+  if (!res.ok) throw new Error(body?.error?.message || text || `HTTP ${res.status}`);
+  return body;
+}
+
+/* ── overview ────────────────────────────────────────────────────────────── */
+function chip(label, value) {
+  return `<span class="chip">${escapeHTML(label)} <b>${escapeHTML(value)}</b></span>`;
+}
+
+function renderOverview() {
+  const u = overview.usage || {};
+  const k = overview.keys || {};
+  const rate = u.requests24h ? Math.round((u.success24h / u.requests24h) * 100) : null;
+  $('chips').innerHTML = [
+    chip('keys', `${k.active || 0}/${k.total || 0}`),
+    k.cooling ? chip('cooldown', k.cooling) : '',
+    chip('24 jam', `${u.requests24h || 0} req`),
+    rate === null ? '' : chip('sukses', rate + '%'),
+    chip('karakter', (u.charsToday || 0).toLocaleString()),
+    chip('latensi', (u.avgLatencyMs24h || 0) + ' ms'),
+    chip('versi', overview.version),
+  ].join('');
+}
+
+async function loadOverview() {
+  overview = await apiJSON('/api/overview');
+  const prefs = loadPrefs();
+  const controls = overview.controls || {};
+
+  if (!$('model').options.length) {
+    $('model').innerHTML = overview.models.map((m) =>
+      `<option value="${escapeHTML(m)}">${escapeHTML(m)}</option>`).join('');
+    $('model').value = prefs.model && overview.models.includes(prefs.model) ? prefs.model : overview.defaultModel;
+    $('format').value = prefs.format || 'mp3';
+
+    const [minSpeed, maxSpeed] = controls.speedRange || [0.6, 1.5];
+    $('speed').min = minSpeed; $('speed').max = maxSpeed;
+    const [minVolume, maxVolume] = controls.volumeRange || [0.5, 2];
+    $('volume').min = minVolume; $('volume').max = maxVolume;
+    $('speed').value = prefs.speed ?? 1;
+    $('volume').value = prefs.volume ?? 1;
+
+    const primary = new Set(controls.primaryEmotions || []);
+    const all = controls.emotions || [];
+    const primaryOptions = all.filter((e) => primary.has(e));
+    const restOptions = all.filter((e) => !primary.has(e));
+    $('emotion').innerHTML =
+      '<option value="">(biarkan model memilih)</option>'
+      + primaryOptions.map((e) => `<option value="${e}">${e}</option>`).join('')
+      + (restOptions.length ? `<optgroup label="lainnya">${restOptions.map((e) => `<option value="${e}">${e}</option>`).join('')}</optgroup>` : '');
+    $('emotion').value = prefs.emotion || '';
+  }
+  updateRangeOutputs();
+  renderOverview();
+  updateCurl();
+}
+
+function updateRangeOutputs() {
+  $('speedOut').textContent = num('speed').toFixed(2);
+  $('volumeOut').textContent = num('volume').toFixed(2);
+}
+
+/* ── voice library ───────────────────────────────────────────────────────── */
+function voiceQuery(reset) {
+  const params = new URLSearchParams();
+  const q = $('voiceSearch').value.trim();
+  const lang = $('langFilter').value.trim();
+  const gender = $('genderFilter').value;
+  if (q) params.set('q', q);
+  if (lang) params.set('language', lang);
+  if (gender) params.set('gender', gender);
+  params.set('limit', '50');
+  if (!reset && voiceState.cursor) params.set('starting_after', voiceState.cursor);
+  return params;
+}
+
+function voiceLocale(v) {
+  const accent = Array.isArray(v.accents) && v.accents[0];
+  return (accent && accent.locale) || v.language || '';
+}
+
+function renderVoices() {
+  const list = $('voiceList');
+  if (!voiceState.items.length) {
+    list.innerHTML = '<p class="empty">Tidak ada voice yang cocok. Coba hapus filter atau muat ulang.</p>';
+  } else {
+    list.innerHTML = voiceState.items.map((v) => {
+      const selected = v.id === voiceState.selected?.id;
+      const tags = [
+        voiceLocale(v) ? `<span class="tag">${escapeHTML(voiceLocale(v))}</span>` : '',
+        v.gender ? `<span class="tag">${escapeHTML(v.gender.replace('_', ' '))}</span>` : '',
+        v.is_pro ? '<span class="tag">pro</span>' : '',
+        v.is_owner ? '<span class="tag">milik sendiri</span>' : '',
+      ].join('');
+      const desc = v.tagline || v.description || '';
+      return `<div class="voice-card" role="option" tabindex="0" data-id="${escapeHTML(v.id)}"
+                   aria-selected="${selected ? 'true' : 'false'}"
+                   title="${escapeHTML(v.name || v.id)}">
+        <button class="play-btn" data-play="${escapeHTML(v.id)}" title="Putar contoh${desc ? ' — ' + escapeHTML(desc) : ''}">▶</button>
+        <span class="vc-text">
+          <span class="vc-name">${escapeHTML(v.name || v.id)}</span>
+          <span class="vc-meta">${tags}</span>
+          ${desc ? `<span class="vc-desc">${escapeHTML(desc)}</span>` : ''}
+        </span>
+      </div>`;
+    }).join('');
+  }
+  $('loadMore').hidden = !voiceState.hasMore;
+  $('voiceCount').textContent = voiceState.items.length
+    ? `${voiceState.items.length} voice ditampilkan` : '';
+}
+
+async function loadVoices(reset) {
+  if (voiceState.loading) return;
+  voiceState.loading = true;
+  $('loadMore').disabled = true;
+  if (reset) {
+    voiceState.cursor = null;
+    $('voiceList').innerHTML = '<p class="empty">Memuat voice…</p>';
+  }
+  try {
+    const body = await apiJSON('/api/voices?' + voiceQuery(reset).toString());
+    const page = body?.data || [];
+    voiceState.items = reset ? page : voiceState.items.concat(page);
+    const last = voiceState.items[voiceState.items.length - 1];
+    voiceState.cursor = body?.next_page || (last ? last.id : null);
+    voiceState.hasMore = Boolean(body?.has_more) && Boolean(voiceState.cursor);
+    const remembered = loadPrefs().voice;
+    if (!voiceState.selected && remembered) {
+      voiceState.selected = voiceState.items.find((v) => v.id === remembered) || null;
+    }
+    renderVoices();
+    renderSelectedVoice();
+  } catch (err) {
+    $('voiceList').innerHTML = `<p class="empty">Gagal memuat voice: ${escapeHTML(err.message)}</p>`;
+  } finally {
+    voiceState.loading = false;
+    $('loadMore').disabled = false;
+  }
+}
+
+function selectVoice(voice) {
+  voiceState.selected = voice;
+  savePrefs({ voice: voice.id });
+  renderVoices();
+  renderSelectedVoice();
+  updateCurl();
+}
+
+function renderSelectedVoice() {
+  const v = voiceState.selected;
+  $('voiceName').textContent = v ? (v.name || v.id) : 'belum dipilih';
+  $('voiceMeta').textContent = v
+    ? [shortID(v.id), voiceLocale(v), v.gender].filter(Boolean).join(' · ')
+    : 'pilih dari pustaka di sebelah, lalu klik Generate';
+  $('voicePlaySelected').disabled = !v;
+  $('speak').disabled = !v;
+}
+
+/* ── voice preview ───────────────────────────────────────────────────────── */
+function setPreviewButton(id, state) {
+  const button = $(`button[data-play="${CSS.escape(id)}"]`);
+  if (button) button.dataset.state = state;
+}
+
+async function playPreview(id) {
+  if (previewButton && previewButton.dataset.state === 'playing') {
+    previewAudio.pause();
+    previewButton.dataset.state = '';
+    previewButton.textContent = '▶';
+    if (previewButton.dataset.play === id) { previewButton = null; return; }
+  }
+  if (previewButton) { previewButton.dataset.state = ''; previewButton.textContent = '▶'; }
+
+  const button = $(`button[data-play="${CSS.escape(id)}"]`);
+  previewButton = button;
+  setPreviewButton(id, 'loading');
+  if (button) button.textContent = '…';
+  try {
+    const res = await api(`/v1/audio/voices/${encodeURIComponent(id)}/preview`);
+    if (!res.ok) throw new Error(await errorMessage(res));
+    const blob = await res.blob();
+    previewAudio.src = URL.createObjectURL(blob);
+    previewAudio.onended = previewAudio.onerror = () => {
+      if (button) { button.dataset.state = ''; button.textContent = '▶'; }
+    };
+    setPreviewButton(id, 'playing');
+    if (button) button.textContent = '■';
+    await previewAudio.play();
+  } catch (err) {
+    setPreviewButton(id, '');
+    if (button) button.textContent = '▶';
+    toast(err.message, true);
+  }
+}
+
+/* ── generation ──────────────────────────────────────────────────────────── */
+function requestBody() {
+  const body = {
+    model: $('model').value,
+    input: $('text').value,
+    voice: voiceState.selected?.id,
+    response_format: $('format').value,
+  };
+  const emotion = $('emotion').value;
+  if (emotion) body.emotion = emotion;
+  if (num('speed') !== 1) body.speed = num('speed');
+  if (num('volume') !== 1) body.volume = num('volume');
+  return body;
+}
+
+// MediaSource lets the clip start before Cartesia has finished, which is the
+// point of streaming. Only mp3 is appendable this way; anything else takes the
+// wait-for-the-whole-file path below.
+function streamSupported() {
+  if ($('format').value !== 'mp3') return false;
+  try {
+    return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
+  } catch {
+    return false;
+  }
+}
+
+async function generate() {
+  const voice = voiceState.selected;
+  if (!voice) { toast('pilih voice dulu', true); return; }
+  const text = $('text').value.trim();
+  if (!text) { toast('isi teksnya dulu', true); return; }
+
+  const body = requestBody();
+  const status = $('speakStatus');
+  const controller = new AbortController();
+  streamCtl = controller;
+  setBusy(true);
+  status.textContent = streamSupported() ? 'mengalir…' : 'menyintesis…';
+
+  try {
+    if (streamSupported()) {
+      await generateStreaming(body, controller, status);
+    } else {
+      await generateBuffered(body, controller, status);
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      status.textContent = 'dihentikan';
+    } else {
+      status.textContent = '';
+      toast(err.message, true);
+    }
+    refreshUsage();
+  } finally {
+    streamCtl = null;
+    setBusy(false);
+  }
+}
+
+async function generateStreaming(body, controller, status) {
+  const res = await api('/api/test', { method: 'POST', body: JSON.stringify(body), signal: controller.signal });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  if (!res.body) throw new Error('respons tidak punya body');
+
+  const mediaSource = new MediaSource();
+  if (streamUrl) URL.revokeObjectURL(streamUrl);
+  streamUrl = URL.createObjectURL(mediaSource);
+  const player = $('audio');
+  player.hidden = false;
+  player.src = streamUrl;
+
+  await new Promise((resolve, reject) => {
+    mediaSource.addEventListener('sourceopen', resolve, { once: true });
+    mediaSource.addEventListener('error', () => reject(new Error('media source gagal dibuka')), { once: true });
+  });
+
+  const source = mediaSource.addSourceBuffer('audio/mpeg');
+  const reader = res.body.getReader();
+  const chunks = [];
+  const started = performance.now();
+  let bytes = 0;
+  let playing = false;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      chunks.push(value);
+      bytes += value.byteLength;
+      status.textContent = `mengalir… ${fmtBytes(bytes)}`;
+      await appendChunk(source, value);
+      if (!playing) {
+        playing = true;
+        status.textContent = `${fmtBytes(bytes)} · mulai dalam ${Math.round(performance.now() - started)} ms`;
+        player.play().catch(() => { /* the controls are right there */ });
+      }
+    }
+    if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+  } catch (err) {
+    if (mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch { /* already closed */ } }
+    throw err;
+  }
+
+  // The bytes are already in hand, so "Unduh" must not re-run the synthesis —
+  // Cartesia bills per character, and a second call is a second charge.
+  const blob = new Blob(chunks, { type: 'audio/mpeg' });
+  audio = { blob, ext: 'mp3' };
+  $('download').disabled = false;
+  status.textContent = `${fmtBytes(bytes)} · ${Math.round(performance.now() - started)} ms`;
+  refreshUsage();
+}
+
+async function appendChunk(source, chunk) {
+  await new Promise((resolve, reject) => {
+    const done = () => { cleanup(); resolve(); };
+    const fail = () => { cleanup(); reject(new Error('append audio gagal')); };
+    function cleanup() {
+      source.removeEventListener('updateend', done);
+      source.removeEventListener('error', fail);
+    }
+    source.addEventListener('updateend', done);
+    source.addEventListener('error', fail);
+    try {
+      source.appendBuffer(chunk);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
+  });
+}
+
+async function generateBuffered(body, controller, status) {
+  const started = performance.now();
+  const res = await api('/api/test', { method: 'POST', body: JSON.stringify(body), signal: controller.signal });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const blob = await res.blob();
+
+  if (streamUrl) { URL.revokeObjectURL(streamUrl); streamUrl = null; }
+  const player = $('audio');
+  player.hidden = false;
+  player.src = URL.createObjectURL(blob);
+  player.play().catch(() => { /* the controls are right there */ });
+
+  audio = { blob, ext: $('format').value };
+  $('download').disabled = false;
+  status.textContent = `${fmtBytes(blob.size)} · ${Math.round(performance.now() - started)} ms`;
+  refreshUsage();
+}
+
+function stop() {
+  if (streamCtl) streamCtl.abort();
+  $('audio').pause();
+}
+
+function setBusy(busy) {
+  $('speak').disabled = busy || !voiceState.selected;
+  $('stop').disabled = !busy;
+  $('speak').textContent = busy ? 'Generating…' : 'Generate';
+}
+
+function download() {
+  if (!audio) return;
+  const url = URL.createObjectURL(audio.blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `speech.${audio.ext}`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function updateCurl() {
+  const voice = voiceState.selected?.id || '<voice-id>';
+  const body = {
+    model: $('model').value,
+    input: 'Halo dunia',
+    voice,
+    response_format: $('format').value,
+  };
+  if ($('emotion').value) body.emotion = $('emotion').value;
+  if (num('speed') !== 1) body.speed = num('speed');
+  if (num('volume') !== 1) body.volume = num('volume');
+  const origin = location.origin;
+  $('curl').textContent =
+    `curl -X POST ${origin}/v1/audio/speech \\\n`
+    + `  -H "Authorization: Bearer $GATEWAY_TOKEN" \\\n`
+    + `  -H "Content-Type: application/json" \\\n`
+    + `  -d '${JSON.stringify(body)}' \\\n`
+    + `  --output speech.${$('format').value === 'pcm' ? 'pcm' : $('format').value}`;
+}
+
+/* ── usage ───────────────────────────────────────────────────────────────── */
+function renderRequests(body) {
+  usageState.total = body.total || 0;
+  const rows = body.data || [];
+  if (!rows.length) {
+    $('usageTable').innerHTML = '<p class="empty">Belum ada request.</p>';
+  } else {
+    $('usageTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
+      + '<th>Waktu</th><th>Model</th><th>Voice</th><th>Karakter</th><th>Ukuran</th>'
+      + '<th>Status</th><th>Latensi</th><th>Error</th>'
+      + '</tr></thead><tbody>'
+      + rows.map((r) => `<tr>
+          <td class="hide-sm">${escapeHTML(fmtTime(r.ts))}</td>
+          <td class="mono">${escapeHTML(r.model)}</td>
+          <td class="mono" title="${escapeHTML(r.voiceId)}">${escapeHTML(shortID(r.voiceId))}</td>
+          <td>${r.chars}</td>
+          <td class="hide-sm">${r.bytes ? fmtBytes(r.bytes) : '—'}</td>
+          <td><span class="pill ${r.status >= 200 && r.status < 300 ? 'ok' : 'err'}">${r.status}</span></td>
+          <td class="hide-sm">${r.latencyMs} ms</td>
+          <td class="hide-sm err-text">${escapeHTML((r.error || '').slice(0, 90))}</td>
+        </tr>`).join('')
+      + '</tbody></table></div>';
+  }
+  const from = usageState.total ? usageState.offset + 1 : 0;
+  const to = Math.min(usageState.offset + usageState.limit, usageState.total);
+  $('pageInfo').textContent = `${from}–${to} dari ${usageState.total}`;
+  $('pageNewer').disabled = usageState.offset === 0;
+  $('pageOlder').disabled = usageState.offset + usageState.limit >= usageState.total;
+}
+
+async function loadRequests() {
+  renderRequests(await apiJSON(`/api/requests?limit=${usageState.limit}&offset=${usageState.offset}`));
+}
+
+function refreshUsage() {
+  Promise.all([loadOverview(), loadRequests()]).catch(() => { /* the table can wait */ });
+}
+
+/* ── keys ────────────────────────────────────────────────────────────────── */
+function renderKeys(keys) {
+  if (!keys.length) {
+    $('keysTable').innerHTML = '<p class="empty">Belum ada key. Tambahkan satu di atas — '
+      + 'tanpa key, endpoint menjawab 503.</p>';
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  $('keysTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
+    + '<th>Label</th><th>Key</th><th>Status</th><th class="hide-sm">Terakhir dipakai</th>'
+    + '<th class="hide-sm">Error</th><th></th></tr></thead><tbody>'
+    + keys.map((k) => {
+      const cooling = k.cooldownUntil > now;
+      const status = !k.isActive ? '<span class="pill err">nonaktif</span>'
+        : cooling ? `<span class="pill warn">cooldown ${Math.max(1, Math.ceil((k.cooldownUntil - now) / 60))} m</span>`
+          : '<span class="pill ok">siap</span>';
+      return `<tr>
+        <td>${escapeHTML(k.label || '(tanpa label)')}</td>
+        <td class="mono">${escapeHTML(k.maskedSecret)}</td>
+        <td>${status}${k.strikes ? ` <span class="muted">×${k.strikes}</span>` : ''}</td>
+        <td class="hide-sm muted">${escapeHTML(fmtTime(k.lastUsedAt))}</td>
+        <td class="hide-sm err-text">${escapeHTML(k.lastError || '')}</td>
+        <td><div class="row">
+          <button class="btn ghost tiny" data-act="reveal" data-id="${k.id}">salin</button>
+          <button class="btn ghost tiny" data-act="toggle" data-id="${k.id}" data-active="${k.isActive ? 1 : 0}">${k.isActive ? 'nonaktifkan' : 'aktifkan'}</button>
+          ${cooling ? `<button class="btn ghost tiny" data-act="reset" data-id="${k.id}">bebaskan</button>` : ''}
+          <button class="btn ghost tiny" data-act="delete" data-id="${k.id}">hapus</button>
+        </div></td>
+      </tr>`;
+    }).join('')
+    + '</tbody></table></div>';
+}
+
+async function loadKeys() {
+  renderKeys((await apiJSON('/api/keys')).data || []);
+}
+
+async function addKey() {
+  const secret = $('keySecret').value.trim();
+  if (!secret) { toast('isi API key dulu', true); return; }
+  try {
+    await apiJSON('/api/keys', {
+      method: 'POST',
+      body: JSON.stringify({ label: $('keyLabel').value.trim(), secret }),
+    });
+    $('keySecret').value = '';
+    $('keyLabel').value = '';
+    toast('key tersimpan');
+    refreshUsage();
+    loadKeys();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function keyAction(button) {
+  const { id, act, active } = button.dataset;
+  try {
+    if (act === 'delete') {
+      if (!confirm('Hapus key ini?')) return;
+      await apiJSON(`/api/keys/${id}`, { method: 'DELETE' });
+    } else if (act === 'toggle') {
+      await apiJSON(`/api/keys/${id}`, { method: 'PATCH', body: JSON.stringify({ isActive: active !== '1' }) });
+    } else if (act === 'reset') {
+      await apiJSON(`/api/keys/${id}/reset`, { method: 'POST' });
+    } else if (act === 'reveal') {
+      const body = await apiJSON(`/api/keys/${id}/reveal`);
+      try {
+        await navigator.clipboard.writeText(body.secret);
+        toast('key disalin ke clipboard');
+      } catch {
+        toast('salin manual: ' + body.secret);
+      }
+      return;
+    }
+    loadKeys();
+    refreshUsage();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+/* ── wiring ──────────────────────────────────────────────────────────────── */
+function updateTextStats() {
+  const text = $('text').value;
+  const chars = [...text].length;
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  $('charCount').textContent = `${chars.toLocaleString()} karakter · ${words.toLocaleString()} kata`;
+}
+
+let searchTimer = null;
+
+function wire() {
+  const remember = (patch) => { savePrefs(patch); updateCurl(); };
+
+  $('model').addEventListener('change', () => remember({ model: $('model').value }));
+  $('format').addEventListener('change', () => remember({ format: $('format').value }));
+  $('emotion').addEventListener('change', () => remember({ emotion: $('emotion').value }));
+  $('speed').addEventListener('input', () => { updateRangeOutputs(); remember({ speed: num('speed') }); });
+  $('volume').addEventListener('input', () => { updateRangeOutputs(); remember({ volume: num('volume') }); });
+  $('text').addEventListener('input', updateTextStats);
+  $('text').addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+  });
+
+  $('speak').addEventListener('click', generate);
+  $('stop').addEventListener('click', stop);
+  $('download').addEventListener('click', download);
+
+  $('voicePlaySelected').addEventListener('click', () => {
+    if (voiceState.selected) playPreview(voiceState.selected.id);
+  });
+  $('voiceList').addEventListener('click', (e) => {
+    const play = e.target.closest('[data-play]');
+    if (play) { e.stopPropagation(); playPreview(play.dataset.play); return; }
+    const card = e.target.closest('.voice-card');
+    if (card) selectVoice(voiceState.items.find((v) => v.id === card.dataset.id));
+  });
+  $('voiceList').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest('.voice-card');
+    if (card) { e.preventDefault(); selectVoice(voiceState.items.find((v) => v.id === card.dataset.id)); }
+  });
+  $('voiceSearch').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadVoices(true), 320);
+  });
+  $('langFilter').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadVoices(true), 420);
+  });
+  $('genderFilter').addEventListener('change', () => loadVoices(true));
+  $('voiceRefresh').addEventListener('click', () => loadVoices(true));
+  $('loadMore').addEventListener('click', () => loadVoices(false));
+
+  $('pageOlder').addEventListener('click', () => { usageState.offset += usageState.limit; loadRequests().catch(() => {}); });
+  $('pageNewer').addEventListener('click', () => { usageState.offset = Math.max(0, usageState.offset - usageState.limit); loadRequests().catch(() => {}); });
+
+  $('keyAdd').addEventListener('click', addKey);
+  $('keySecret').addEventListener('keydown', (e) => { if (e.key === 'Enter') addKey(); });
+  $('keysTable').addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-act]');
+    if (button) keyAction(button);
+  });
+
+  $('tokenSave').addEventListener('click', () => {
+    token = $('tokenInput').value.trim();
+    if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY);
+    $('tokenBanner').hidden = true;
+    refresh();
+  });
+}
+
+async function refresh() {
+  try {
+    await Promise.all([loadOverview(), loadKeys(), loadRequests()]);
+  } catch (err) {
+    if (!$('tokenBanner').hidden) return;
+    toast(err.message, true);
+  }
+}
+
+async function boot() {
+  wire();
+  updateTextStats();
+  renderSelectedVoice();
+  await refresh();
+  await loadVoices(true);
+  setInterval(() => { if (!document.hidden) refreshUsage(); }, 30000);
+}
+
+boot();

@@ -19,6 +19,8 @@ type Server struct {
 	cart    *cartesia.Client
 	logger  *slog.Logger
 	voices  *voiceCache
+	assets  map[string]*asset
+	index   *asset
 	handler http.Handler
 
 	// previewFetch is the client used for voice preview files. It is a field so
@@ -26,14 +28,36 @@ type Server struct {
 	previewFetch func(context.Context, string, string) (*http.Response, error)
 }
 
+// dashboardAssets maps the served URL path to the embedded file and its type.
+var dashboardAssets = map[string]struct {
+	file        string
+	contentType string
+}{
+	"/":            {"index.html", "text/html; charset=utf-8"},
+	"/app.css":     {"app.css", "text/css; charset=utf-8"},
+	"/app.js":      {"app.js", "text/javascript; charset=utf-8"},
+	"/favicon.ico": {"favicon.svg", "image/svg+xml"},
+}
+
 // New builds the server and its route table.
-func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *slog.Logger) *Server {
+func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *slog.Logger) (*Server, error) {
+	assets := make(map[string]*asset, len(dashboardAssets))
+	for urlPath, spec := range dashboardAssets {
+		loaded, err := loadAsset(spec.file, spec.contentType)
+		if err != nil {
+			return nil, err
+		}
+		assets[urlPath] = loaded
+	}
+
 	s := &Server{
 		cfg:          cfg,
 		store:        st,
 		cart:         client,
 		logger:       logger,
 		voices:       newVoiceCache(256, voiceCacheTTL),
+		assets:       assets,
+		index:        assets["/"],
 		previewFetch: client.FetchPreview,
 	}
 
@@ -55,10 +79,13 @@ func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *s
 	mux.HandleFunc("GET /api/voices", s.handleVoicesAPI)
 	mux.HandleFunc("POST /api/test", s.handleTest)
 
-	mux.HandleFunc("GET /", s.handleUI)
+	mux.HandleFunc("GET /app.css", s.handleAsset("/app.css"))
+	mux.HandleFunc("GET /app.js", s.handleAsset("/app.js"))
+	mux.HandleFunc("GET /favicon.ico", s.handleAsset("/favicon.ico"))
+	mux.HandleFunc("GET /", s.handleIndex)
 
 	s.handler = chain(mux, s.corsMiddleware, s.authMiddleware, s.logMiddleware)
-	return s
+	return s, nil
 }
 
 // Handler returns the composed middleware stack.

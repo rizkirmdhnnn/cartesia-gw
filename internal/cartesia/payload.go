@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -42,18 +43,25 @@ type OutputFormat struct {
 	Encoding   string `json:"encoding,omitempty"`
 }
 
-// GenerationConfig carries the per-request speed override.
+// GenerationConfig carries the per-request controls Cartesia exposes on
+// sonic-3 and newer. Zero values are omitted so an unset control does not
+// override the model's own default.
 type GenerationConfig struct {
-	Speed float64 `json:"speed,omitempty"`
+	Speed   float64 `json:"speed,omitempty"`
+	Volume  float64 `json:"volume,omitempty"`
+	Emotion string  `json:"emotion,omitempty"`
 }
 
-// SpeechRequest is the OpenAI /v1/audio/speech body a client sends here.
+// SpeechRequest is the OpenAI /v1/audio/speech body a client sends here, plus
+// the two Cartesia controls OpenAI has no equivalent for.
 type SpeechRequest struct {
 	Model          string   `json:"model"`
 	Input          string   `json:"input"`
 	Voice          string   `json:"voice"`
 	ResponseFormat string   `json:"response_format"`
 	Speed          *float64 `json:"speed"`
+	Volume         *float64 `json:"volume"`
+	Emotion        string   `json:"emotion"`
 	Language       string   `json:"language"`
 	Locale         string   `json:"locale"`
 }
@@ -66,12 +74,33 @@ type Translation struct {
 	Extension string
 }
 
-// Speed range Cartesia documents. A value outside it is a client error rather
+// Ranges Cartesia documents. A value outside one is a client error rather
 // than something to clamp silently.
 const (
-	MinSpeed = 0.6
-	MaxSpeed = 1.5
+	MinSpeed  = 0.6
+	MaxSpeed  = 1.5
+	MinVolume = 0.5
+	MaxVolume = 2.0
 )
+
+// Emotions is the closed set Cartesia accepts, in the order its own schema
+// lists them. PrimaryEmotions are the six it names first and surfaces most
+// prominently; the dashboard puts them at the top of the picker.
+var Emotions = []string{
+	"neutral", "happy", "excited", "enthusiastic", "elated", "euphoric",
+	"triumphant", "amazed", "surprised", "flirtatious", "curious", "content",
+	"peaceful", "serene", "calm", "grateful", "affectionate", "trust",
+	"sympathetic", "anticipation", "mysterious", "angry", "mad", "outraged",
+	"frustrated", "agitated", "threatened", "disgusted", "contempt", "envious",
+	"sarcastic", "ironic", "sad", "dejected", "melancholic", "disappointed",
+	"hurt", "guilty", "bored", "tired", "rejected", "nostalgic", "wistful",
+	"apologetic", "hesitant", "insecure", "confused", "resigned", "anxious",
+	"panicked", "alarmed", "scared", "proud", "confident", "distant",
+	"skeptical", "contemplative", "determined",
+}
+
+// PrimaryEmotions are the six Cartesia lists as the primary controls.
+var PrimaryEmotions = []string{"neutral", "calm", "angry", "content", "sad", "scared"}
 
 // Translate validates an OpenAI-shaped request and maps it onto Cartesia's
 // payload. Every error returned here is the caller's fault (HTTP 400).
@@ -102,6 +131,14 @@ func Translate(req SpeechRequest) (Translation, error) {
 	if err != nil {
 		return Translation{}, err
 	}
+	volume, err := normalizeVolume(req.Volume)
+	if err != nil {
+		return Translation{}, err
+	}
+	emotion, err := normalizeEmotion(req.Emotion)
+	if err != nil {
+		return Translation{}, err
+	}
 
 	language := req.Language
 	if language == "" {
@@ -120,10 +157,26 @@ func Translate(req SpeechRequest) (Translation, error) {
 		MIME:      MIMEFor(container),
 		Extension: ExtensionFor(container),
 	}
-	if speed != nil {
-		t.Request.GenerationConfig = &GenerationConfig{Speed: *speed}
+	if gen := generationConfig(speed, volume, emotion); gen != nil {
+		t.Request.GenerationConfig = gen
 	}
 	return t, nil
+}
+
+// generationConfig omits itself entirely when no control was set, so an
+// untouched request keeps the model's own defaults.
+func generationConfig(speed, volume *float64, emotion string) *GenerationConfig {
+	if speed == nil && volume == nil && emotion == "" {
+		return nil
+	}
+	gen := &GenerationConfig{Emotion: emotion}
+	if speed != nil {
+		gen.Speed = *speed
+	}
+	if volume != nil {
+		gen.Volume = *volume
+	}
+	return gen
 }
 
 // NormalizeModel strips the accepted provider prefix and defaults an empty
@@ -197,4 +250,29 @@ func normalizeSpeed(speed *float64) (*float64, error) {
 		return nil, fmt.Errorf("speed %.2f is outside the range Cartesia supports (%.1f-%.1f)", v, MinSpeed, MaxSpeed)
 	}
 	return &v, nil
+}
+
+func normalizeVolume(volume *float64) (*float64, error) {
+	if volume == nil {
+		return nil, nil
+	}
+	v := *volume
+	if v < MinVolume || v > MaxVolume {
+		return nil, fmt.Errorf("volume %.2f is outside the range Cartesia supports (%.1f-%.1f)", v, MinVolume, MaxVolume)
+	}
+	return &v, nil
+}
+
+// normalizeEmotion accepts the documented set and nothing else: Cartesia's own
+// rejection would arrive as a 400 that says nothing about which value was
+// wrong, so the closed set is checked here where the message can name it.
+func normalizeEmotion(emotion string) (string, error) {
+	e := strings.ToLower(strings.TrimSpace(emotion))
+	if e == "" {
+		return "", nil
+	}
+	if !slices.Contains(Emotions, e) {
+		return "", fmt.Errorf("emotion %q is not one of the %d emotions Cartesia supports", emotion, len(Emotions))
+	}
+	return e, nil
 }

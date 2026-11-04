@@ -54,6 +54,14 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"usage":           usage,
 		"models":          cartesia.Models,
 		"defaultModel":    cartesia.DefaultModel,
+		// The controls and their bounds come from the server so the dashboard
+		// never carries a second copy of a value the gateway validates.
+		"controls": map[string]any{
+			"speedRange":      []float64{cartesia.MinSpeed, cartesia.MaxSpeed},
+			"volumeRange":     []float64{cartesia.MinVolume, cartesia.MaxVolume},
+			"emotions":        cartesia.Emotions,
+			"primaryEmotions": cartesia.PrimaryEmotions,
+		},
 	})
 }
 
@@ -182,6 +190,8 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		Voice          string   `json:"voice"`
 		ResponseFormat string   `json:"response_format"`
 		Speed          *float64 `json:"speed"`
+		Volume         *float64 `json:"volume"`
+		Emotion        string   `json:"emotion"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxTestBody)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -196,6 +206,8 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		Voice:          body.Voice,
 		ResponseFormat: body.ResponseFormat,
 		Speed:          body.Speed,
+		Volume:         body.Volume,
+		Emotion:        body.Emotion,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

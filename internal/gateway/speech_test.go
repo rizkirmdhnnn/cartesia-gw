@@ -82,7 +82,10 @@ func newServer(t *testing.T, upstream *fakeUpstream, token string) (*Server, *st
 		Version:         "test",
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := New(cfg, st, cartesia.New(upstreamServer.URL, cfg.CartesiaVersion, cfg.RequestTimeout), logger)
+	server, err := New(cfg, st, cartesia.New(upstreamServer.URL, cfg.CartesiaVersion, cfg.RequestTimeout), logger)
+	if err != nil {
+		t.Fatalf("gateway.New() error = %v", err)
+	}
 
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)

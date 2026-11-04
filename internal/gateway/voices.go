@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,9 @@ const (
 	voicePageMax    = 100
 	previewMaxBytes = 16 << 20
 )
+
+// genders is the closed set Cartesia documents for the voice filter.
+var genders = []string{"masculine", "feminine", "gender_neutral"}
 
 // ttlCache is a bounded map with an expiry. Every cache in this process is one
 // of these: an unbounded map keyed by client input is a memory leak with a
@@ -224,6 +228,9 @@ func voiceQuery(r *http.Request) url.Values {
 	}
 	if language := strings.TrimSpace(in.Get("language")); language != "" {
 		out.Set("language", truncate(language, 32))
+	}
+	if gender := strings.ToLower(strings.TrimSpace(in.Get("gender"))); slices.Contains(genders, gender) {
+		out.Set("gender", gender)
 	}
 	if cursor := strings.TrimSpace(in.Get("starting_after")); cursor != "" {
 		out.Set("starting_after", truncate(cursor, 64))

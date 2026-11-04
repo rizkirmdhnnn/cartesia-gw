@@ -60,6 +60,8 @@ dibuka.
 | `voice` | ya | Voice ID Cartesia. **Tidak ada default** — mengirim suara yang tidak diminta lebih buruk daripada error. |
 | `response_format` | tidak | `mp3` (default), `wav`, `pcm`. `opus`/`aac`/`flac` **ditolak 400**, bukan diam-diam diganti mp3. |
 | `speed` | tidak | `0.6`–`1.5`. Di luar itu ditolak, bukan dijepit diam-diam. |
+| `volume` | tidak | `0.5`–`2.0`. Ditolak kalau di luar rentang, sama seperti `speed`. |
+| `emotion` | tidak | Dari 58 nilai resmi Cartesia (`calm`, `excited`, `sad`, …). Nilai di luar daftar ditolak dengan pesan yang menyebut jumlahnya. Hanya berpengaruh pada `sonic-3` ke atas. |
 | `language` / `locale` | tidak | Kirim salah satu, jangan keduanya (Cartesia menolak pasangan itu). |
 
 **`?response_format=json`** pada query memilih *envelope*, bukan container: balasannya
@@ -73,9 +75,13 @@ lama tidak perlu diubah.
   "model_id": "sonic-3",
   "transcript": "Halo dunia",
   "voice": "<voice-uuid>",
-  "output_format": {"container": "mp3", "sample_rate": 44100, "bit_rate": 128000}
+  "output_format": {"container": "mp3", "sample_rate": 44100, "bit_rate": 128000},
+  "generation_config": {"speed": 1.2, "volume": 1.4, "emotion": "calm"}
 }
 ```
+
+`generation_config` hanya muncul kalau Anda mengisi salah satu kontrolnya; kalau tidak, model memakai
+default-nya sendiri.
 
 plus header `Authorization: Bearer sk_car_…` dan `Cartesia-Version`.
 
@@ -114,6 +120,39 @@ dan kegagalan jaringan juga `502`.
 dokumentasinya di balik login dan saya belum punya key. Karena body error-nya memang diganti dengan
 envelope sendiri, yang hilang adalah struktur aslinya; teks pesannya tetap diteruskan utuh di dalam
 `message`, dan tersimpan juga di kolom Error pada tabel riwayat.
+
+---
+
+## Dashboard
+
+Dua kolom: kontrol di kiri, pustaka voice di kanan. Di layar sempit keduanya bertumpuk.
+
+**Pustaka voice** — bukan dropdown. Tiap baris punya tombol putar untuk mendengar contoh suara tanpa
+meninggalkan halaman, dan menampilkan lokal aksen (dari `accents[].locale`), gender, serta penanda
+`pro` / `milik sendiri`. Ada pencarian (server-side, 320 ms setelah berhenti mengetik), filter bahasa,
+filter gender, dan tombol **Muat lagi** yang mengikuti kursor `next_page` Cartesia. Klik barisnya untuk
+memilih.
+
+**Kontrol sintesis** — model, format, slider Speed dan Volume, dropdown Emotion, plus penghitung
+karakter dan kata. Batas slider diambil dari `GET /api/overview`, bukan ditulis ulang di JavaScript,
+jadi nilai yang ditolak server tidak akan pernah ditawarkan UI.
+
+**Pemutaran** — mp3 diputar lewat MediaSource Extensions: suara mulai berbunyi sambil Cartesia masih
+mengirim sisanya. Terukur pada upstream yang mengirim 160 KB bertahap: **byte pertama 4,6 ms, selesai
+1,84 dtk**. Browser yang tidak mendukung (dan format wav/pcm, yang tidak bisa di-append) otomatis
+memakai jalur tunggu-unduh-penuh.
+
+**Unduh tidak menagih dua kali.** Byte yang sudah mengalir dikumpulkan sambil diputar, jadi tombol
+**Unduh** menyimpan dari memori. Cartesia menagih per karakter, dan menghasilkan ulang hanya untuk
+mengunduh adalah pembayaran kedua untuk audio yang sama.
+
+Preferensi terakhir (model, format, emotion, speed, volume, voice) disimpan di `localStorage`.
+`Ctrl`/`Cmd`+`Enter` di kotak teks langsung men-generate.
+
+Halaman dan asetnya di-embed ke binary: `index.html`, `app.css`, `app.js`, `favicon.svg`. Tanpa
+framework, tanpa langkah build, tanpa aset dari CDN. Ketiga aset dikirim dengan `ETag` dan
+`Cache-Control: no-cache`; halaman shell-nya `no-store`, supaya upgrade binary tidak pernah menyisakan
+JS lama di cache browser.
 
 ---
 
@@ -211,15 +250,15 @@ WantedBy=multi-user.target
 ```
 cmd/cartesia-gw        wiring, flag, shutdown, pemangkas riwayat
 internal/config        flag/env + penolakan bind jaringan tanpa token
-internal/cartesia      terjemahan payload, klien HTTP, katalog model
+internal/cartesia      terjemahan payload, klien HTTP, katalog model + emotion
 internal/store         SQLite: key + state cooldown, riwayat request
 internal/gateway       route, terjemahan, rotasi, auth, API dashboard
-internal/gateway/ui    satu halaman HTML yang di-embed ke binary
+internal/gateway/ui    index.html + app.css + app.js + favicon, di-embed ke binary
 ```
 
-Frontend-nya satu berkas HTML dengan JS biasa, di-embed lewat `//go:embed`. Tanpa Node, tanpa
-langkah build, tanpa aset dari CDN — halaman harus tetap tampil di host yang tidak punya akses
-keluar.
+Frontend-nya tiga berkas (`index.html`, `app.css`, `app.js`) yang di-embed lewat `//go:embed`, tanpa
+Node, tanpa langkah build, tanpa aset dari CDN — halaman harus tetap tampil di host yang tidak punya
+akses keluar.
 
 ## Batasan
 
@@ -227,3 +266,8 @@ keluar.
 - Tidak ada autentikasi multi-user: satu token, satu operator.
 - Belum ada rate limit per klien. Kalau nanti dipakai lebih dari satu klien, batas per key ada di
   Cartesia, bukan di sini.
+- `emotion` hanya berpengaruh pada `sonic-3` dan yang lebih baru; gateway meneruskannya apa adanya
+  untuk model apa pun, sesuai kontrak Cartesia.
+- Kalau upstream mengirim body tanpa `Content-Length` dan tanpa chunked lalu menahan koneksinya,
+  permintaan itu berhenti di `-request-timeout` (default 5 menit). Cartesia sendiri selalu memframing
+  responsnya, jadi ini hanya soal proxy yang salah di tengah jalan.

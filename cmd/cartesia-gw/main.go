@@ -50,9 +50,14 @@ func run() error {
 	go pruneLoop(ctx, st, cfg, logger)
 
 	client := cartesia.New(cfg.CartesiaBaseURL, cfg.CartesiaVersion, cfg.RequestTimeout)
-	server := &http.Server{
+	server, err := gateway.New(cfg, st, client, logger)
+	if err != nil {
+		return err
+	}
+
+	httpServer := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           gateway.New(cfg, st, client, logger).Handler(),
+		Handler:           server.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
 		// WriteTimeout stays 0: a long synthesis may stream for minutes and a
 		// deadline here would truncate audio mid-sentence.
@@ -70,7 +75,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -84,7 +89,7 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
 	return nil
