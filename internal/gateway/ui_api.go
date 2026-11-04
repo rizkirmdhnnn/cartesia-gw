@@ -46,6 +46,13 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
 		return
 	}
+	rotation, err := s.store.RotationStrategy(r.Context())
+	if err != nil {
+		s.logError("overview: rotation", err)
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":         s.cfg.Version,
 		"cartesiaVersion": s.cfg.CartesiaVersion,
@@ -54,6 +61,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"usage":           usage,
 		"models":          cartesia.Models,
 		"defaultModel":    cartesia.DefaultModel,
+		// The rotation in force and the set that can be chosen. A strategy the
+		// flag set but the dashboard has overridden is not reported here — the
+		// stored one is what actually picks keys.
+		"rotation":  rotation.String(),
+		"rotations": store.StrategyNames(),
 		// The controls and their bounds come from the server so the dashboard
 		// never carries a second copy of a value the gateway validates.
 		"controls": map[string]any{
@@ -167,6 +179,34 @@ func (s *Server) handleRevealKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": key.ID, "secret": key.Secret})
+}
+
+// handlePatchSettings changes a runtime setting. Rotation is the only one
+// today, and it takes effect on the next request without a restart.
+func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Rotation *string `json:"rotation"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxTestBody)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Rotation == nil {
+		writeError(w, http.StatusBadRequest, `nothing to change: send {"rotation":"<strategy>"}`)
+		return
+	}
+	strategy, err := store.ParseStrategy(*body.Rotation)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.SetRotationStrategy(r.Context(), strategy); err != nil {
+		s.logError("set rotation", err)
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+	s.logger.Info("rotation strategy changed", "strategy", strategy.String())
+	writeJSON(w, http.StatusOK, map[string]any{"rotation": strategy.String()})
 }
 
 func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {

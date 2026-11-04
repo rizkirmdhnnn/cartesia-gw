@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
 // Defaults. The API version is the one value Cartesia's own OpenAPI document
@@ -36,7 +38,10 @@ type Config struct {
 	Retention       time.Duration
 	RequestTimeout  time.Duration
 	LogLevel        string
-	Version         string
+	// Rotation is the key-selection strategy used before the dashboard stores
+	// one. Once a value is in the database, this flag is not consulted again.
+	Rotation store.Strategy
+	Version  string
 }
 
 // PruneInterval is how often expired request rows are deleted.
@@ -55,9 +60,18 @@ func Load(version string) (*Config, error) {
 	flag.StringVar(&cfg.CartesiaVersion, "cartesia-version", env("CARTESIA_GW_VERSION_HEADER", DefaultCartesiaVersion), "value sent as the Cartesia-Version header")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("CARTESIA_GW_LOG_LEVEL", "info"), "debug, info, warn or error")
 
+	rotation := flag.String("rotation", env("CARTESIA_GW_ROTATION", store.DefaultStrategy.String()),
+		"key selection before the dashboard stores one: "+strings.Join(store.StrategyNames(), ", "))
+
 	retentionDays := flag.Int("retention-days", envInt("CARTESIA_GW_RETENTION_DAYS", DefaultRetentionDays), "days of request history to keep")
 	timeout := flag.Duration("request-timeout", DefaultRequestTimeout, "per-synthesis upstream timeout (0 disables)")
 	flag.Parse()
+
+	parsedRotation, err := store.ParseStrategy(*rotation)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Rotation = parsedRotation
 
 	if *retentionDays < 1 {
 		return nil, errors.New("retention-days must be at least 1")

@@ -168,6 +168,7 @@ Flag, dengan padanan environment variable:
 | `-cartesia-version` | `CARTESIA_GW_VERSION_HEADER` | `2026-08-14` | Nilai header `Cartesia-Version`. Cartesia menolak request tanpa header ini. |
 | `-cartesia-base-url` | `CARTESIA_GW_BASE_URL` | `https://api.cartesia.ai` | Untuk mengarahkan ke proxy sendiri. |
 | `-retention-days` | `CARTESIA_GW_RETENTION_DAYS` | `30` | Lama riwayat request disimpan. |
+| `-rotation` | `CARTESIA_GW_ROTATION` | `least-recently-used` | Strategi pemilihan key sebelum dashboard menyimpan satu: `least-recently-used`, `round-robin`, `random`, `sticky`. |
 | `-cors-origin` | `CARTESIA_GW_CORS_ORIGIN` | — | Satu origin yang diizinkan untuk `/v1/*`. Kosong = CORS mati. |
 | `-request-timeout` | — | `5m` | Batas waktu per sintesis (0 = tanpa batas). |
 | `-log-level` | `CARTESIA_GW_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
@@ -176,7 +177,27 @@ Flag, dengan padanan environment variable:
 
 ## Rotasi key dan cooldown
 
-- Key dipilih **round-robin menurut yang paling lama tidak dipakai**, bukan acak.
+Strategi pemilihan key bisa diganti dari dashboard (panel **API keys**) dan berlaku pada permintaan
+berikutnya tanpa restart. Empat pilihan:
+
+| Strategi | Perilaku |
+|---|---|
+| `least-recently-used` | **Default.** Key yang paling lama tidak dipakai dipilih lebih dulu. Tetap menyebar rata saat key ditambah atau dihapus, karena tidak menyimpan urutan. |
+| `round-robin` | Bergilir berurutan menurut id, kembali ke key pertama setelah yang terakhir. Urutannya bisa diprediksi. |
+| `random` | Acak dari key yang tidak sedang diparkir. |
+| `sticky` | Satu key dipakai terus sampai kena limit, jadi kuota key lain tetap utuh. |
+
+Semua strategi mengabaikan key yang sedang cooldown selama masih ada key yang bebas. Yang tersimpan
+di database adalah sumber kebenarannya; `-rotation` hanya menentukan nilai awal untuk database yang
+belum pernah diatur dari dashboard.
+
+**Kenapa urutannya disimpan dalam milidetik.** Kolom `last_used_at` berpresisi detik — cukup untuk
+ditampilkan, tidak cukup untuk memilih. Beberapa permintaan yang jatuh dalam detik yang sama akan
+seri, tie-break jatuh ke `id ASC`, dan key ber-id terkecil melayani semuanya sampai detik berganti.
+Terukur pada key a/b/c, enam permintaan berturut-turut: `a b c a a a`. Urutan sekarang disimpan di
+kolom `last_used_ms` terpisah, dan hasilnya `a b c a b c`. Database dari build lama mendapat kolom
+itu otomatis saat dibuka.
+
 - Kegagalan yang menyangkut key (`401`, `402`, `403`, `429`, `5xx`, error jaringan) memarkir key itu
   dengan backoff `60s → 2m → 4m → … → 30m`. `402` (kredit habis) langsung 30 menit.
 - `Retry-After` dari Cartesia menang atas backoff, dibatasi 1 jam.
@@ -191,7 +212,9 @@ Flag, dengan padanan environment variable:
 
 ## Yang disimpan (dan yang tidak)
 
-Tiga tabel: `keys`, `requests`, dan tidak ada lagi.
+Tiga tabel: `keys`, `requests`, `settings`, dan tidak ada lagi.
+
+`settings` menyimpan strategi rotasi yang dipilih dan kursor round-robin.
 
 `requests` menyimpan waktu, model, voice id, jumlah karakter, ukuran audio, key mana yang dipakai,
 status, latensi, dan pesan error. **Teks input dan audionya tidak disimpan** — yang pertama adalah

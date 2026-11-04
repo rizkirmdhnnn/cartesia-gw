@@ -38,7 +38,7 @@ func run() error {
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.Open(cfg.DBPath, store.WithDefaultRotation(cfg.Rotation))
 	if err != nil {
 		return err
 	}
@@ -69,6 +69,7 @@ func run() error {
 		"db", cfg.DBPath,
 		"cartesiaVersion", cfg.CartesiaVersion,
 		"retentionDays", int(cfg.Retention.Hours()/24),
+		"rotation", cfg.Rotation.String(),
 		"gatewayToken", cfg.GatewayToken != "",
 		"corsOrigin", cfg.CORSOrigin,
 	)

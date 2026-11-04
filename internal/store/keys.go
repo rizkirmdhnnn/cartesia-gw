@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -117,28 +118,122 @@ func (s *Store) ResetCooldown(ctx context.Context, id int64) error {
 
 // PickKey returns the next key to try and whether it is still cooling down.
 //
-// Ordering: keys outside their cooldown first, then by least recently used, so
-// an idle key is preferred over one that just answered. If every key is
-// cooling down the earliest-released one comes back anyway — refusing to try
-// anything would turn a short upstream hiccup into an outage.
+// Which key that is depends on the active strategy:
+//
+//   - least-recently-used: outside its cooldown first, then least recently
+//     used, so an idle key is preferred over one that just answered.
+//   - round-robin: the next id after the last one picked, wrapping at the end,
+//     so the order is predictable.
+//   - random: any key, with parked ones deprioritised.
+//   - sticky: the most recently used key, so one key carries the traffic until
+//     it is parked and the others keep their quota.
+//
+// Every strategy falls back to the earliest-released parked key rather than
+// refusing to try anything: a short upstream hiccup should not become an
+// outage. The caller is told the key is cooling down so it can say so.
 func (s *Store) PickKey(ctx context.Context) (Key, bool, error) {
+	strategy, err := s.RotationStrategy(ctx)
+	if err != nil {
+		return Key{}, false, err
+	}
+	switch strategy {
+	case StrategyRoundRobin:
+		return s.pickRoundRobin(ctx)
+	case StrategyRandom:
+		return s.pickWith(ctx, `
+			SELECT `+keyColumns+` FROM keys
+			WHERE is_active = 1
+			ORDER BY (cooldown_until <= ?) DESC, RANDOM()
+			LIMIT 1`, time.Now().Unix())
+	case StrategySticky:
+		return s.pickWith(ctx, `
+			SELECT `+keyColumns+` FROM keys
+			WHERE is_active = 1
+			ORDER BY (cooldown_until <= ?) DESC, last_used_ms DESC, id DESC
+			LIMIT 1`, time.Now().Unix())
+	default:
+		return s.pickWith(ctx, `
+			SELECT `+keyColumns+` FROM keys
+			WHERE is_active = 1
+			ORDER BY (cooldown_until <= ?) DESC, last_used_ms ASC, id ASC
+			LIMIT 1`, time.Now().Unix())
+	}
+}
+
+// pickRoundRobin walks ids in order. The cursor is stored, not derived from
+// last_used_at, so a key touched by a health check does not shift the cycle.
+func (s *Store) pickRoundRobin(ctx context.Context) (Key, bool, error) {
 	now := time.Now()
-	row := s.db.QueryRowContext(ctx, `
+	cursor, err := s.rotationCursor(ctx)
+	if err != nil {
+		return Key{}, false, err
+	}
+
+	key, err := s.queryKey(ctx, `
 		SELECT `+keyColumns+` FROM keys
-		WHERE is_active = 1
-		ORDER BY (cooldown_until <= ?) DESC, last_used_at ASC, id ASC
-		LIMIT 1`, now.Unix())
-	key, err := scanKey(row)
+		WHERE is_active = 1 AND cooldown_until <= ? AND id > ?
+		ORDER BY id
+		LIMIT 1`, now.Unix(), cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Wrap: the next key is the first one, skipping parked keys.
+		key, err = s.queryKey(ctx, `
+			SELECT `+keyColumns+` FROM keys
+			WHERE is_active = 1 AND cooldown_until <= ?
+			ORDER BY id
+			LIMIT 1`, now.Unix())
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		// Everything is parked. Take the one released soonest.
+		key, err = s.queryKey(ctx, `
+			SELECT `+keyColumns+` FROM keys
+			WHERE is_active = 1
+			ORDER BY cooldown_until ASC, id ASC
+			LIMIT 1`)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, false, ErrNoKeys
 	}
 	if err != nil {
 		return Key{}, false, err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE keys SET last_used_at = ? WHERE id = ?`, now.Unix(), key.ID); err != nil {
+
+	if err := s.SetSetting(ctx, settingRotationCursor, strconv.FormatInt(key.ID, 10)); err != nil {
+		return Key{}, false, err
+	}
+	return s.finishPick(ctx, key, now)
+}
+
+// pickWith runs a strategy query and treats "no rows" as an empty key set.
+func (s *Store) pickWith(ctx context.Context, query string, args ...any) (Key, bool, error) {
+	now := time.Now()
+	key, err := s.queryKey(ctx, query, args...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Key{}, false, ErrNoKeys
+	}
+	if err != nil {
+		return Key{}, false, err
+	}
+	return s.finishPick(ctx, key, now)
+}
+
+// finishPick records the use and reports whether the key is parked.
+//
+// The order is kept in milliseconds while the dashboard reads the second
+// column: two picks inside the same second would otherwise tie, and the
+// least-recently-used strategy would fall through to id order and hammer the
+// lowest id for the rest of that second.
+func (s *Store) finishPick(ctx context.Context, key Key, now time.Time) (Key, bool, error) {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE keys SET last_used_at = ?, last_used_ms = ? WHERE id = ?`,
+		now.Unix(), now.UnixMilli(), key.ID)
+	if err != nil {
 		return Key{}, false, fmt.Errorf("touch key %d: %w", key.ID, err)
 	}
 	return key, key.Cooling(now), nil
+}
+
+func (s *Store) queryKey(ctx context.Context, query string, args ...any) (Key, error) {
+	return scanKey(s.db.QueryRowContext(ctx, query, args...))
 }
 
 // MarkSuccess clears the failure state of a key.

@@ -76,6 +76,7 @@ func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *s
 	mux.HandleFunc("POST /api/keys/{id}/reset", s.handleResetKey)
 	mux.HandleFunc("GET /api/keys/{id}/reveal", s.handleRevealKey)
 	mux.HandleFunc("GET /api/requests", s.handleRequests)
+	mux.HandleFunc("PATCH /api/settings", s.handlePatchSettings)
 	mux.HandleFunc("GET /api/voices", s.handleVoicesAPI)
 	mux.HandleFunc("POST /api/test", s.handleTest)
 

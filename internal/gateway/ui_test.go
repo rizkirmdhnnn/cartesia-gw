@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -132,6 +133,110 @@ func TestOverviewPublishesTheControlBounds(t *testing.T) {
 			t.Errorf("controls.%s = %v, want a two-element range", key, controls[key])
 		}
 	}
+}
+
+func TestRotationSettingIsExposedAndValidated(t *testing.T) {
+	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
+		return http.StatusOK, "", nil
+	}}
+	_, _, server := newServer(t, upstream, "")
+
+	overview, err := apiGet(t, server, "/api/overview")
+	if err != nil {
+		t.Fatalf("GET /api/overview error = %v", err)
+	}
+	if overview["rotation"] != "least-recently-used" {
+		t.Errorf("rotation = %v, want the default least-recently-used", overview["rotation"])
+	}
+	rotations, _ := overview["rotations"].([]any)
+	if len(rotations) != 4 {
+		t.Errorf("rotations = %v, want the four strategies", rotations)
+	}
+
+	// A valid change is stored and reported back.
+	body, err := apiJSON(t, server, http.MethodPatch, "/api/settings", `{"rotation":"round-robin"}`)
+	if err != nil {
+		t.Fatalf("PATCH /api/settings error = %v", err)
+	}
+	if body["rotation"] != "round-robin" {
+		t.Errorf("PATCH returned rotation = %v, want round-robin", body["rotation"])
+	}
+
+	// And it survives: the overview is read from the database, not memory.
+	overview, err = apiGet(t, server, "/api/overview")
+	if err != nil {
+		t.Fatalf("GET /api/overview error = %v", err)
+	}
+	if overview["rotation"] != "round-robin" {
+		t.Errorf("rotation after the change = %v, want round-robin", overview["rotation"])
+	}
+}
+
+func TestRotationSettingRejectsUnknownValues(t *testing.T) {
+	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
+		return http.StatusOK, "", nil
+	}}
+	_, _, server := newServer(t, upstream, "")
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "an unknown strategy", body: `{"rotation":"first"}`, want: http.StatusBadRequest},
+		{name: "an empty strategy", body: `{"rotation":""}`, want: http.StatusBadRequest},
+		{name: "nothing to change", body: `{}`, want: http.StatusBadRequest},
+		{name: "malformed json", body: `{`, want: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.DefaultClient.Do(mustRequest(t, http.MethodPatch, server.URL+"/api/settings", tt.body))
+			if err != nil {
+				t.Fatalf("PATCH error = %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+		})
+	}
+
+	// The rejected values must not have been written.
+	overview, err := apiGet(t, server, "/api/overview")
+	if err != nil {
+		t.Fatalf("GET /api/overview error = %v", err)
+	}
+	if overview["rotation"] != "least-recently-used" {
+		t.Errorf("rotation = %v, want the default to be untouched", overview["rotation"])
+	}
+}
+
+func mustRequest(t *testing.T, method, url, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func apiJSON(t *testing.T, server *httptest.Server, method, path, body string) (map[string]any, error) {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(mustRequest(t, method, server.URL+path, body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var decoded map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return decoded, errors.New("unexpected status")
+	}
+	return decoded, nil
 }
 
 func TestVoicesGenderFilterIsForwardedAndBounded(t *testing.T) {

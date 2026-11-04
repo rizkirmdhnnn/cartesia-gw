@@ -125,8 +125,12 @@
   <section class="panel span" aria-labelledby="keysTitle">
     <div class="panel-head">
       <h2 id="keysTitle">API keys</h2>
-      <span class="muted">dipakai bergiliran; yang gagal diparkir sementara</span>
+      <div class="rotation">
+        <label for="rotation">Rotasi key</label>
+        <select id="rotation"></select>
+      </div>
     </div>
+    <p class="muted rotation-hint" id="rotationHint"></p>
     <div class="row add-key">
       <div class="field">
         <label for="keyLabel">Label</label>

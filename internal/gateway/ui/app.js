@@ -18,6 +18,27 @@ let previewButton = null;
 const voiceState = { items: [], cursor: null, hasMore: false, loading: false, selected: null };
 const usageState = { offset: 0, limit: 50, total: 0 };
 
+// Key selection strategies. The hint is what makes the choice understandable
+// without reading the README.
+const ROTATIONS = {
+  'least-recently-used': {
+    label: 'Least recently used',
+    hint: 'Key yang paling lama tidak dipakai dipilih lebih dulu. Menyebar rata, dan menyesuaikan sendiri saat key ditambah atau dihapus.',
+  },
+  'round-robin': {
+    label: 'Round robin',
+    hint: 'Bergilir berurutan menurut id, kembali ke key pertama setelah yang terakhir. Urutannya bisa diprediksi.',
+  },
+  'random': {
+    label: 'Random',
+    hint: 'Dipilih acak dari key yang tidak sedang diparkir.',
+  },
+  'sticky': {
+    label: 'Sticky',
+    hint: 'Satu key dipakai terus sampai kena limit, jadi kuota key lain tetap utuh.',
+  },
+};
+
 /* ── preferences ─────────────────────────────────────────────────────────── */
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return {}; }
@@ -130,7 +151,35 @@ async function loadOverview() {
   }
   updateRangeOutputs();
   renderOverview();
+  renderRotation();
   updateCurl();
+}
+
+function renderRotation() {
+  const select = $('rotation');
+  const values = overview.rotations || [];
+  if (!select.options.length) {
+    select.innerHTML = values.map((v) =>
+      `<option value="${escapeHTML(v)}">${escapeHTML(ROTATIONS[v]?.label || v)}</option>`).join('');
+  }
+  select.value = overview.rotation || values[0] || '';
+  $('rotationHint').textContent = ROTATIONS[overview.rotation]?.hint || '';
+}
+
+async function changeRotation() {
+  const select = $('rotation');
+  try {
+    const body = await apiJSON('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ rotation: select.value }),
+    });
+    overview.rotation = body.rotation;
+    renderRotation();
+    toast('rotasi: ' + (ROTATIONS[body.rotation]?.label || body.rotation));
+  } catch (err) {
+    select.value = overview.rotation; // the server kept the old one
+    toast(err.message, true);
+  }
 }
 
 function updateRangeOutputs() {
@@ -642,6 +691,7 @@ function wire() {
 
   $('keyAdd').addEventListener('click', addKey);
   $('keySecret').addEventListener('keydown', (e) => { if (e.key === 'Enter') addKey(); });
+  $('rotation').addEventListener('change', changeRotation);
   $('keysTable').addEventListener('click', (e) => {
     const button = e.target.closest('button[data-act]');
     if (button) keyAction(button);
