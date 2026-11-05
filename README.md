@@ -1,12 +1,13 @@
 # cartesia-gw
 
 Gateway satu binary yang menaruh endpoint **OpenAI-compatible `/v1/audio/speech`** di depan API
-text-to-speech Cartesia. Untuk pemakaian sendiri/internal: rotasi beberapa API key, cooldown saat
-kunci kena limit, riwayat pemakaian, dan satu halaman dashboard.
+text-to-speech **Cartesia** dan **ElevenLabs**. Satu URL, satu client key, dan `model` memilih
+providernya. Untuk pemakaian sendiri/internal: rotasi beberapa API key per provider, cooldown saat
+kunci kena limit, riwayat pemakaian, dan satu dashboard.
 
 Dibuat karena `9router-go` menyembunyikan Cartesia (`hidden: true`) — provider itu terdaftar di
 katalog upstream tapi handler-nya tidak pernah ikut diport, sehingga permintaannya akan ditolak.
-Alat ini tidak menyentuh `9router-go` sama sekali: ia hidup sendiri, hanya bicara Cartesia.
+Alat ini tidak menyentuh `9router-go` sama sekali: ia hidup sendiri.
 
 ---
 
@@ -15,20 +16,53 @@ Alat ini tidak menyentuh `9router-go` sama sekali: ia hidup sendiri, hanya bicar
 ```bash
 make build
 ./bin/cartesia-gw
-# buka http://127.0.0.1:20140/ → tab API keys → tempel key sk_car_…
+# buka http://127.0.0.1:20140/ → Upstream keys → tempel key sk_car_… atau key ElevenLabs
 ```
 
-Lalu panggil seperti endpoint OpenAI biasa:
+Lalu panggil seperti endpoint OpenAI biasa. Provider dipilih oleh prefix model:
 
 ```bash
 curl -X POST http://127.0.0.1:20140/v1/audio/speech \
+  -H "Authorization: Bearer dk_…" \
   -H "Content-Type: application/json" \
-  -d '{"model":"sonic-3","input":"Halo dunia","voice":"<voice-uuid>"}' \
+  -d '{"model":"cartesia/sonic-3.6","input":"Halo dunia","voice":"<voice-uuid>"}' \
+  --output speech.mp3
+
+curl -X POST http://127.0.0.1:20140/v1/audio/speech \
+  -H "Authorization: Bearer dk_…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"elevenlabs/eleven_v3","input":"Hello world","voice":"JBFqnCBsd6RMkjVDRZzb"}' \
   --output speech.mp3
 ```
 
-Voice ID diambil dari dashboard (tombol **Muat voice**) atau dari
-[Voice Library](https://play.cartesia.ai/voices).
+Voice ID diambil dari dashboard (pustaka voice, lengkap dengan tombol salin) atau dari
+[Voice Library](https://play.cartesia.ai/voices) dan [ElevenLabs voices](https://elevenlabs.io/app/voice-library).
+
+---
+
+## Memilih provider
+
+`model` adalah satu-satunya input yang menentukan ke mana request pergi.
+
+| `model` | Provider | Catatan |
+|---|---|---|
+| `cartesia/sonic-3.6` | Cartesia | bentuk resmi |
+| `elevenlabs/eleven_v3` | ElevenLabs | bentuk resmi; `el/` juga diterima |
+| `elevenlabs/eleven_v3/Rachel` | ElevenLabs | segmen ketiga = voice, dipakai kalau body tidak mengirim `voice` |
+| `sonic-3.6` | Cartesia | tanpa prefix, dikenali dari bentuk nama |
+| `eleven_v3` | ElevenLabs | tanpa prefix, dikenali dari bentuk nama |
+| *(kosong)* | Cartesia | model default `sonic-3` |
+
+Aturannya:
+
+1. **Prefix menang.** `cartesia/` dan `elevenlabs/` (`el/`, `eleven/`) menentukan provider tanpa menebak.
+2. **Tanpa prefix**, nama model menentukan: `sonic-*` → Cartesia, `eleven_*` → ElevenLabs. Klien lama
+   yang mengirim `"model":"sonic-3"` tetap jalan tanpa perubahan.
+3. **Provider yang belum punya key** menjawab `424` dengan pesan yang menyebut provider dan tempat
+   menambah key. Provider lain tidak dipakai diam-diam untuk model yang memintanya.
+
+`GET /v1/models` mengembalikan id berprefix (`cartesia/sonic-3.6`, `elevenlabs/eleven_v3`), jadi nilai
+yang disalin dari daftar itu bisa langsung dikirim balik sebagai `model`.
 
 ---
 
@@ -36,16 +70,16 @@ Voice ID diambil dari dashboard (tombol **Muat voice**) atau dari
 
 | Method | Path | Keterangan |
 |---|---|---|
-| `POST` | `/v1/audio/speech` | Sintesis. Body mengikuti bentuk OpenAI. |
-| `GET` | `/v1/models` | Katalog model Sonic. |
-| `GET` | `/v1/audio/voices` | Daftar voice Cartesia (`?q=`, `?language=`, `?limit=`, `?starting_after=`). |
-| `GET` | `/v1/audio/voices/{id}/preview` | Memutar contoh suara voice tersebut. |
-| `GET` | `/healthz` | Status + jumlah key. Tidak butuh token. |
+| `POST` | `/v1/audio/speech` | Sintesis. Body mengikuti bentuk OpenAI; `model` memilih provider. |
+| `GET` | `/v1/models` | Katalog gabungan, id berprefix. |
+| `GET` | `/v1/audio/voices` | Daftar voice dari semua provider (`?provider=`, `?q=`, `?language=`, `?gender=`, `?limit=`, `?starting_after=`). |
+| `GET` | `/v1/audio/voices/{id}/preview` | Memutar contoh suara; provider dipilih dari bentuk id atau `?provider=`. |
+| `GET` | `/healthz` | Status + jumlah key per provider. Tidak butuh token. |
 | `GET` | `/` | Dashboard. |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/api/…` | API dashboard (key, riwayat, overview). |
 
-Tidak ada jalur native Cartesia (`/tts/sse`, `/tts/websocket`, `/infill`). Yang tidak dipakai tidak
-dibuka.
+Tidak ada jalur native ke Cartesia (`/tts/sse`, `/tts/websocket`, `/infill`) maupun ke ElevenLabs
+(`/v1/text-to-speech`, `/v1/voices`). Yang tidak dipakai tidak dibuka.
 
 ---
 
@@ -55,20 +89,23 @@ dibuka.
 
 | Field | Wajib | Catatan |
 |---|---|---|
-| `model` | tidak | `sonic-3.6`, `sonic-3.5`, `sonic-3`, `sonic-latest`. Default `sonic-3`. Prefix `cartesia/` diterima dan dibuang. |
-| `input` | ya | Teks. |
-| `voice` | ya | Voice ID Cartesia. **Tidak ada default** — mengirim suara yang tidak diminta lebih buruk daripada error. |
-| `response_format` | tidak | `mp3` (default), `wav`, `pcm`. `opus`/`aac`/`flac` **ditolak 400**, bukan diam-diam diganti mp3. |
-| `speed` | tidak | `0.6`–`1.5`. Di luar itu ditolak, bukan dijepit diam-diam. |
-| `volume` | tidak | `0.5`–`2.0`. Ditolak kalau di luar rentang, sama seperti `speed`. |
-| `emotion` | tidak | Dari 58 nilai resmi Cartesia (`calm`, `excited`, `sad`, …). Nilai di luar daftar ditolak dengan pesan yang menyebut jumlahnya. Hanya berpengaruh pada `sonic-3` ke atas. |
-| `language` / `locale` | tidak | Kirim salah satu, jangan keduanya (Cartesia menolak pasangan itu). |
+| `model` | tidak | Lihat tabel di atas. Default `cartesia/sonic-3`. |
+| `input` | ya | Teks. Satu-satunya field yang tetap `400` bila kosong. |
+| `voice` | tidak | Voice ID atau nama voice. Default: voice yang dikonfigurasi di halaman Akun, lalu provider. Lihat "Saat request tidak pas". |
+| `response_format` | tidak | `mp3` (default), `wav`, `pcm`, `opus`. Format lain menjadi `mp3` dan dicatat. |
+| `speed` | tidak | Dijepit ke rentang provider: Cartesia `0.6`–`1.5`, ElevenLabs `0.7`–`1.2`. |
+| `volume` | tidak | Cartesia `0.5`–`2.0` (dijepit). ElevenLabs tidak punya kontrol ini → diabaikan dan dicatat. |
+| `emotion` | tidak | Cartesia memakai daftar 58 nilainya; ElevenLabs memetakannya ke `voice_settings.style` dan `stability`. |
+| `language` / `locale` | tidak | Cartesia meneruskan `language`. ElevenLabs memakai `language_code`; model yang tidak mendukung bahasa itu diganti model yang mendukung. |
+| `stability`, `similarity_boost`, `style`, `use_speaker_boost` | tidak | Khusus ElevenLabs, diteruskan apa adanya. Nilai eksplisit mengalahkan pemetaan emotion. |
 
 **`?response_format=json`** pada query memilih *envelope*, bukan container: balasannya
 `{"audio":"<base64>","format":"mp3"}`. Ini konvensi yang sudah dipakai klien 9router, jadi klien
 lama tidak perlu diubah.
 
-**Bentuk yang dikirim ke Cartesia** dibangun ulang, bukan diteruskan:
+**Bentuk yang dikirim ke upstream** dibangun ulang per provider, bukan diteruskan mentah.
+
+Cartesia (`POST /tts/bytes`, `Authorization: Bearer sk_car_…`, `Cartesia-Version`):
 
 ```json
 {
@@ -80,46 +117,100 @@ lama tidak perlu diubah.
 }
 ```
 
-`generation_config` hanya muncul kalau Anda mengisi salah satu kontrolnya; kalau tidak, model memakai
-default-nya sendiri.
+ElevenLabs (`POST /v1/text-to-speech/{voice_id}/stream?output_format=mp3_44100_128`, header `xi-api-key`):
 
-plus header `Authorization: Bearer sk_car_…` dan `Cartesia-Version`.
+```json
+{
+  "text": "Hello world",
+  "model_id": "eleven_v3",
+  "voice_settings": {"style": 0.7, "stability": 0.3, "speed": 1.1}
+}
+```
 
-**Streaming.** Untuk `mp3`/`wav`/`pcm`, body upstream diteruskan apa adanya sambil mengalir, jadi
-audio mulai berbunyi sebelum Cartesia selesai. Buffer hanya dipakai untuk envelope `json`, karena
-base64 butuh seluruh byte.
+Ketiga perbedaan — kredensial di header lain, voice di **path**, format di **query** — adalah alasan
+body OpenAI tidak bisa diteruskan apa adanya ke ElevenLabs.
+
+**Streaming.** Body upstream diteruskan sambil mengalir, jadi audio mulai berbunyi sebelum provider
+selesai. Buffer hanya dipakai untuk envelope `json`, karena base64 butuh seluruh byte.
 
 ---
 
-## Seberapa setia ke Cartesia?
+## Saat request tidak pas
 
-Tidak semuanya klon. Ini pemetaannya, supaya tidak ada yang dikira passthrough padahal bukan:
+Model memilih provider; sisanya disesuaikan supaya request **tetap menghasilkan audio**, bukan
+`400`. Setiap penyesuaian tercatat di kolom Catatan pada halaman Riwayat.
 
-| Di sini | Padanan Cartesia | Sifat |
-|---|---|---|
-| `POST /v1/audio/speech` | `POST /tts/bytes` | **Diadaptasi.** Byte audionya identik; bentuk request dan envelope-nya milik OpenAI. |
-| `GET /v1/audio/voices` | `GET /voices` | **Passthrough.** Objek voice diteruskan apa adanya, termasuk field yang alat ini tidak pakai. |
-| `GET /v1/audio/voices/{id}/preview` | `preview_file_url` | **Diadaptasi.** Server yang mengambil berkasnya, karena URL itu butuh header Authorization. |
-| `GET /v1/models` | tidak ada | Milik alat ini. Cartesia tidak punya endpoint katalog model. |
-| Body error | bentuk error Cartesia | **Diganti** dengan envelope `{"error":{"message","type"}}`. |
+| Yang terjadi | Perilaku |
+|---|---|
+| `voice` milik provider lain (UUID Cartesia ke ElevenLabs) | dipakai voice default provider itu; dicatat `voice:→default` |
+| `voice` berupa nama (`"Rachel"`, `"Aria"`) | dicari di katalog provider; nama disimpan sebagai id |
+| `voice` kosong | voice default provider (diatur di halaman Akun) |
+| `speed`/`volume` di luar rentang | dijepit ke batas terdekat; dicatat `speed:clamped 1.6->1.2` |
+| `volume` untuk ElevenLabs | diabaikan; dicatat `volume:ignored` |
+| `emotion` yang tidak dikenal Cartesia | diabaikan; dicatat `emotion:dropped` |
+| format yang tidak didukung Cartesia (`opus`, `flac`) | menjadi `mp3`; dicatat `format:opus->mp3` |
+| bahasa tidak didukung model ElevenLabs | model diganti model yang mendukung; dicatat `model:…` |
+| `language` dan `locale` sekaligus | `language` menang |
 
-**Yang berbeda pada request.** Bentuk yang diterima adalah milik OpenAI, bukan Cartesia: `input` →
-`transcript`, `voice` berupa string (bukan objek), dan `response_format` string (`opus`/`aac`/`flac`
-ditolak) → objek `output_format` dengan `container`, `sample_rate`, dan `bit_rate`/`encoding` yang
-wajib. Query `?response_format=json` juga bukan milik Cartesia — itu konvensi 9router.
+Dua hal yang tetap ditolak: `input` kosong (`400`), dan model yang tidak dikenal untuk provider yang
+disebut eksplisit (`cartesia/sonic-9.9` → `400` dengan daftar model yang benar).
+
+Header respons `X-Gateway-Provider` menyebut provider yang menjawab, `X-Gateway-Requested-Model`
+model yang diminta, dan `X-Audio-Bytes` ukuran audio bila upstream menyebutkannya.
+
+---
+
+## Provider
+
+Satu URL, satu client key, dua upstream. Yang memilih provider adalah `model`; semua endpoint lain
+tetap satu pintu. Routing-nya ada di `internal/provider`:
+
+| Lapisan | Isi |
+|---|---|
+| `internal/tts` | `SpeechRequest` (bentuk OpenAI) dan `Plan` (satu provider) yang dibagi kedua implementasi. |
+| `internal/provider` | `Provider` interface, registry, parser `model`, dan pencocokan bentuk voice. |
+| `internal/cartesia` | `Plan ? POST /tts/bytes`, `GET /voices`, preview; klien asli tidak diubah. |
+| `internal/elevenlabs` | `Plan ? POST /v1/text-to-speech/{voice}/stream`, `GET /v2/voices`, preview; `xi-api-key`. |
+
+Perbedaan yang harus ditangani translator, bukan passthrough: Cartesia memakai `Authorization: Bearer`
++ `Cartesia-Version` dan voice di body; ElevenLabs memakai `xi-api-key`, voice di path, dan format di
+query. Ide "registry provider + `provider/model`" diambil dari `9router-go`, tetapi body OpenAI tidak
+diteruskan mentah seperti di sana � tiap provider punya skema sendiri.
+
+`keys.provider` dan `requests.provider` ditambahkan lewat migrasi; key lama menjadi `cartesia`.
+Rotasi, cooldown, prioritas dan kursor round-robin berjalan per provider.
+
+
+## Seberapa setia ke provider?
+
+Tidak semuanya klon, dan sekarang ada dua upstream. Ini pemetaannya, supaya tidak ada yang dikira
+passthrough padahal bukan:
+
+| Di sini | Cartesia | ElevenLabs | Sifat |
+|---|---|---|---|
+| `POST /v1/audio/speech` | `POST /tts/bytes` | `POST /v1/text-to-speech/{voice}/stream` | **Diadaptasi.** Byte audionya identik; bentuk request dan envelope-nya milik OpenAI. |
+| `GET /v1/audio/voices` | `GET /voices` | `GET /v2/voices` | **Diadaptasi.** Objek voice diteruskan apa adanya, ditambah field `provider`. |
+| `GET /v1/audio/voices/{id}/preview` | `preview_file_url` | `preview_url` | **Diadaptasi.** Server yang mengambil berkasnya, karena URL itu butuh kredensial. |
+| `GET /v1/models` | tidak ada | tidak ada | Milik alat ini. |
+| Body error | bentuk error Cartesia | `{"detail":[…]}` | **Diganti** dengan envelope `{"error":{"message","type"}}`; pesan aslinya dirapikan. |
+
+**Yang berbeda pada request.** Bentuk yang diterima adalah milik OpenAI: `input`, `voice` berupa
+string (bukan objek), dan `response_format` string. Cartesia mendapat `transcript` + objek
+`output_format`; ElevenLabs mendapat `text` + `model_id`, voice di path, dan format di query. Query
+`?response_format=json` juga bukan milik provider mana pun — itu konvensi 9router.
 
 **Yang berbeda pada response suara.** Byte-nya sama; yang dipetakan hanya `Content-Type`
-(`audio/mpeg`, `audio/wav`, `audio/pcm`). `Content-Length` tidak dikirim (respons mengalir/chunked),
-dan header lain dari Cartesia — termasuk request id dan header rate limit — tidak diteruskan.
+(`audio/mpeg`, `audio/wav`, `audio/pcm`, `audio/ogg`). `Content-Length` tidak dikirim (respons
+mengalir/chunked), dan header lain dari upstream tidak diteruskan — kecuali `X-Audio-Bytes` bila
+upstream menyebutkannya.
 
 **Yang berbeda pada status.** `400`, `402`, `404`, `422`, dan `429` diteruskan apa adanya. `401` dan
 `403` **tidak**: itu masalah kredensial di sisi gateway, bukan di sisi klien, jadi jadi `502`. `5xx`
-dan kegagalan jaringan juga `502`.
+dan kegagalan jaringan juga `502`. Provider yang diminta tetapi belum punya key menjawab `424`.
 
-**Yang belum diverifikasi.** Skema error Cartesia sendiri belum pernah saya lihat langsung —
-dokumentasinya di balik login dan saya belum punya key. Karena body error-nya memang diganti dengan
-envelope sendiri, yang hilang adalah struktur aslinya; teks pesannya tetap diteruskan utuh di dalam
-`message`, dan tersimpan juga di kolom Error pada tabel riwayat.
+**Yang belum diverifikasi.** Skema error Cartesia dan balasan ElevenLabs untuk plan yang tidak
+mencakup format tertentu belum diuji dengan key sungguhan. Body error tetap diganti dengan envelope
+sendiri; teks pesannya diteruskan utuh di dalam `message` dan tersimpan di kolom Error riwayat.
 
 ---
 
@@ -129,7 +220,7 @@ Dua kredensial berbeda, dan itu disengaja:
 
 | Kredensial | Untuk apa | Disimpan di |
 |---|---|---|
-| **Akun operator** (username + password) | Membuka dashboard: kelola Cartesia keys, buat client key, ubah rotasi. | bcrypt di SQLite; sesi berupa cookie `HttpOnly` yang hanya menyimpan hash-nya di server. |
+| **Akun operator** (username + password) | Membuka dashboard: kelola key upstream, buat client key, ubah rotasi. | bcrypt di SQLite; sesi berupa cookie `HttpOnly` yang hanya menyimpan hash-nya di server. |
 | **Client API key** (`dk_…`) | Memanggil `/v1/*`: sintesis, daftar model, daftar voice, preview. | Hash SHA-256 di SQLite; secret asli hanya ditampilkan sekali saat dibuat. |
 
 **Kunjungan pertama** menampilkan layar login dengan akun default **`admin` / `admin`**. Itu bukan
@@ -185,9 +276,10 @@ diimpor sekali sebagai client key, jadi skrip lama tetap jalan.
 
 ## Traffic map
 
-Panel di atas workspace adalah peta trafik 24 jam: **client keys** di kiri, **Cartesia keys** di
-kanan, gateway di tengah. Satu request ke `GET /api/routing` mengisi semuanya, jadi kedua sisi selalu
-menggambarkan jendela waktu dan keadaan picker yang sama.
+Panel di atas workspace adalah peta trafik 24 jam: **client keys** di kiri, **key upstream** di kanan
+(dengan label providernya), gateway di tengah. Satu request ke `GET /api/routing` mengisi semuanya,
+jadi kedua sisi selalu menggambarkan jendela waktu dan keadaan picker yang sama. Rotasi berjalan per
+provider: porsi tiap key dihitung terhadap trafik providernya sendiri.
 
 - **Ketebalan garis** sebanding dengan porsi request 24 jam key/client itu (dalam akar kuadrat, supaya
   key kecil tetap terlihat). Garis yang berhenti bergerak berarti key itu sedang cooldown/nonaktif.
@@ -213,7 +305,8 @@ Lima strategi, bisa diganti dari dashboard dan berlaku pada request berikutnya t
 | `priority` | Angka prioritas terkecil dicoba lebih dulu (0 = paling dulu), LRU di antara nilai yang sama. Ini cara mengekspresikan "primer + cadangan": key prioritas 10 hanya beralih ke 60 saat 10 cooldown atau nonaktif. |
 
 Semua strategi mengabaikan key yang sedang cooldown selama ada key bebas, dan jatuh ke key yang paling
-cepat bebas kalau semuanya diparkir.
+cepat bebas kalau semuanya diparkir. **Rotasi berjalan per provider**: Cartesia tidak akan pernah
+meminjam kuota ElevenLabs, meskipun semua key Cartesia sedang cooldown.
 
 ---
 
@@ -226,32 +319,32 @@ Enam halaman terpisah, dipilih dari menu kiri dan tercermin di URL (`#/overview`
 Halaman **Synthesize** dua kolom: kontrol di kiri, pustaka voice di kanan. Di layar sempit keduanya
 bertumpuk.
 
-**Pustaka voice** — bukan dropdown. Tiap baris punya tombol putar untuk mendengar contoh suara tanpa
-meninggalkan halaman, dan menampilkan lokal aksen (dari `accents[].locale`), gender, serta penanda
-`pro` / `milik sendiri`. Ada pencarian (server-side, 320 ms setelah berhenti mengetik), filter bahasa,
-filter gender, dan tombol **Muat lagi** yang mengikuti kursor `next_page` Cartesia. Klik barisnya untuk
+**Pustaka voice** — bukan dropdown, dan memuat voice dari semua provider yang punya key. Tiap baris
+punya tombol putar untuk mendengar contoh suara tanpa meninggalkan halaman, dan menampilkan lokal,
+gender, penanda `pro` / `milik sendiri`, serta label providernya. Ada pencarian (server-side, 320 ms
+setelah berhenti mengetik), filter bahasa, filter gender, dan filter provider. Klik barisnya untuk
 memilih.
 
-**Kontrol sintesis** — model, format, slider Speed dan Volume, dropdown Emotion, plus penghitung
-karakter dan kata. Batas slider diambil dari `GET /api/overview`, bukan ditulis ulang di JavaScript,
-jadi nilai yang ditolak server tidak akan pernah ditawarkan UI.
+**Kontrol sintesis** — model (dikelompokkan per provider), format, slider Speed dan Volume, dropdown
+Emotion, plus penghitung karakter dan kata. Batas slider dan kontrol mana yang tersedia diambil dari
+`GET /api/overview` per provider: saat model ElevenLabs dipilih, slider Volume disembunyikan dan rentang
+Speed menyempit ke 0.7–1.2, jadi nilai yang tidak didukung tidak pernah ditawarkan.
 
-**Pemutaran** — mp3 diputar lewat MediaSource Extensions: suara mulai berbunyi sambil Cartesia masih
-mengirim sisanya. Terukur pada upstream yang mengirim 160 KB bertahap: **byte pertama 4,6 ms, selesai
-1,84 dtk**. Browser yang tidak mendukung (dan format wav/pcm, yang tidak bisa di-append) otomatis
-memakai jalur tunggu-unduh-penuh.
+**Pemutaran** — mp3 diputar lewat MediaSource Extensions: suara mulai berbunyi sambil provider masih
+mengirim sisanya. Browser yang tidak mendukung (dan format wav/pcm/opus, yang tidak bisa di-append)
+otomatis memakai jalur tunggu-unduh-penuh.
 
 **Unduh tidak menagih dua kali.** Byte yang sudah mengalir dikumpulkan sambil diputar, jadi tombol
-**Unduh** menyimpan dari memori. Cartesia menagih per karakter, dan menghasilkan ulang hanya untuk
-mengunduh adalah pembayaran kedua untuk audio yang sama.
+**Unduh** menyimpan dari memori. Kedua provider menagih per karakter, dan menghasilkan ulang hanya
+untuk mengunduh adalah pembayaran kedua untuk audio yang sama.
 
-Preferensi terakhir (model, format, emotion, speed, volume, voice) disimpan di `localStorage`.
-`Ctrl`/`Cmd`+`Enter` di kotak teks langsung men-generate.
+Preferensi terakhir (model, format, emotion, speed, volume, voice) disimpan di `localStorage`; voice
+disimpan sebagai `provider|id` karena dua provider bisa memakai nama yang sama.
 
-Halaman dan asetnya di-embed ke binary: `index.html`, `app.css`, `app.js`, `auth.js`, `routing.js`,
-`clients.js`, `favicon.svg`. Tanpa framework, tanpa langkah build, tanpa aset dari CDN. Aset dikirim
-dengan `ETag` dan `Cache-Control: no-cache`; halaman shell-nya `no-store`, supaya upgrade binary tidak
-pernah menyisakan JS lama di cache browser.
+Halaman dan asetnya di-embed ke binary: `index.html`, `app.css`, `app.js`, `auth.js`, `router.js`,
+`providers.js`, `routing.js`, `clients.js`, `favicon.svg`. Tanpa framework, tanpa langkah build, tanpa
+aset dari CDN. Aset dikirim dengan `ETag` dan `Cache-Control: no-cache`; halaman shell-nya `no-store`,
+supaya upgrade binary tidak pernah menyisakan JS lama di cache browser.
 
 ---
 
@@ -266,6 +359,7 @@ Flag, dengan padanan environment variable:
 | `-db` | `CARTESIA_GW_DB` | `~/.cartesia-gw/data.sqlite` | Berkas SQLite. |
 | `-cartesia-version` | `CARTESIA_GW_VERSION_HEADER` | `2026-08-14` | Nilai header `Cartesia-Version`. Cartesia menolak request tanpa header ini. |
 | `-cartesia-base-url` | `CARTESIA_GW_BASE_URL` | `https://api.cartesia.ai` | Untuk mengarahkan ke proxy sendiri. |
+| `-elevenlabs-base-url` | `CARTESIA_GW_ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | Endpoint ElevenLabs; ganti untuk region (`api.eu.residency.elevenlabs.io`, dst.). |
 | `-retention-days` | `CARTESIA_GW_RETENTION_DAYS` | `30` | Lama riwayat request disimpan. |
 | `-rotation` | `CARTESIA_GW_ROTATION` | `least-recently-used` | Strategi awal: `least-recently-used`, `round-robin`, `random`, `sticky`, `priority`. |
 | `-cors-origin` | `CARTESIA_GW_CORS_ORIGIN` | — | Satu origin yang diizinkan untuk `/v1/*`. Kosong = CORS mati. |
@@ -288,27 +382,32 @@ kolom `last_used_ms` terpisah, dan hasilnya `a b c a b c`. Database dari build l
 itu otomatis saat dibuka.
 
 - Kegagalan yang menyangkut key (`401`, `402`, `403`, `429`, `5xx`, error jaringan) memarkir key itu
-  dengan backoff `60s → 2m → 4m → … → 30m`. `402` (kredit habis) langsung 30 menit.
-- `Retry-After` dari Cartesia menang atas backoff, dibatasi 1 jam.
+  dengan backoff `60s → 2m → 4m → … → 30m`. `402` (kredit habis) langsung 30 menit. ElevenLabs
+  memakai `401` untuk key ditolak maupun kredit habis, jadi keduanya diparkir dengan cara yang sama.
+- `Retry-After` dari upstream menang atas backoff, dibatasi 1 jam.
 - Respons sukses membersihkan strike dan cooldown key tersebut.
-- `400` dan `404` **tidak** memarkir key dan **tidak** diulang ke key lain: itu masalah payload atau
-  voice, dan mencobanya di key kedua hanya membakar satu request untuk jawaban yang sama.
-- Kalau semua key sedang cooldown, yang paling cepat bebas tetap dicoba. Menolak mencoba sama sekali
-  akan mengubah hiccup sesaat menjadi gangguan.
-- Tanpa key sama sekali: `503` dengan pesan yang menunjuk dashboard, bukan error upstream.
+- `400`, `404`, dan `422` **tidak** memarkir key dan **tidak** diulang ke key lain: itu masalah payload
+  atau voice, dan mencobanya di key kedua hanya membakar satu request untuk jawaban yang sama.
+- Kalau semua key provider sedang cooldown, yang paling cepat bebas tetap dicoba. Menolak mencoba sama
+  sekali akan mengubah hiccup sesaat menjadi gangguan.
+- Tanpa key sama sekali: `503` dengan pesan yang menunjuk dashboard. Provider yang diminta tetapi belum
+  punya key: `424` dengan nama provider dan tempat menambahkannya.
 
 ---
 
 ## Yang disimpan (dan yang tidak)
 
-Tiga tabel: `keys`, `requests`, `settings`, dan tidak ada lagi.
+Tabel `keys`, `requests`, `settings`, plus `sessions`, `client_keys` dan tabel akun.
 
-`settings` menyimpan strategi rotasi yang dipilih dan kursor round-robin.
+`settings` menyimpan strategi rotasi, kursor round-robin per provider, dan voice default per provider.
 
-`requests` menyimpan waktu, model, voice id, jumlah karakter, ukuran audio, key mana yang dipakai,
-status, latensi, dan pesan error. **Teks input dan audionya tidak disimpan** — yang pertama adalah
-isi percakapan Anda, yang kedua besar, dan keduanya tidak menjawab pertanyaan apa pun yang ditanyakan
-dashboard.
+`keys` menyimpan `provider` di samping label dan secret, jadi rotasi, cooldown, dan prioritas berlaku
+per provider. Key lama dari sebelum ElevenLabs ada otomatis menjadi `provider = 'cartesia'`.
+
+`requests` menyimpan waktu, provider, model, voice id, jumlah karakter, ukuran audio, key mana yang
+dipakai, status, latensi, pesan error, dan daftar penyesuaian (mis. `speed:clamped 1.6->1.2`). **Teks
+input dan audionya tidak disimpan** — yang pertama adalah isi percakapan Anda, yang kedua besar, dan
+keduanya tidak menjawab pertanyaan apa pun yang ditanyakan dashboard.
 
 Riwayat dipangkas otomatis: sekali saat start, lalu tiap 6 jam, lebih tua dari `-retention-days`.
 
@@ -317,16 +416,18 @@ Riwayat dipangkas otomatis: sekali saat start, lalu tiap 6 jam, lebih tua dari `
 ## Keamanan
 
 - Default hanya listen di loopback. Bind ke alamat jaringan **tanpa** kredensial (token atau akun)
-  ditolak saat start — dashboard ini menampilkan API key Cartesia Anda.
+  ditolak saat start — dashboard ini menampilkan API key upstream Anda.
 - `/api/*` hanya terbuka lewat **sesi operator** (cookie `HttpOnly`); `/v1/*` hanya lewat **client
   key**. Client key tidak bisa membuka dashboard, sesi browser tidak bisa dipakai skrip tanpa cookie.
-- Secret Cartesia dikembalikan hanya oleh `GET /api/keys/{id}/reveal` atas permintaan eksplisit;
+- Secret upstream dikembalikan hanya oleh `GET /api/keys/{id}/reveal` atas permintaan eksplisit;
   daftar key selalu bertopeng. Secret client key tidak pernah bisa diambil lagi setelah dibuat.
 - Semua secret di database disimpan sebagai hash (client key SHA-256, password bcrypt); sesi
-  disimpan sebagai hash dan bisa dicabut semua sekaligus.
+  disimpan sebagai hash dan bisa dicabut semua sekaligus. Secret upstream sendiri tetap perlu dikirim
+  ke provider, jadi disimpan seperti aslinya — database itu yang harus dilindungi.
 - Login dibatasi 10 kegagalan per 15 menit per alamat; bcrypt cost 12 membuat tiap percobaan mahal.
-- URL preview voice divalidasi: hanya `https://*.cartesia.ai` yang boleh diambil. URL yang datang
-  dari respons pihak ketiga tidak diperlakukan sebagai tepercaya.
+- URL preview voice divalidasi per provider: hanya `https://*.cartesia.ai` untuk Cartesia, dan hanya
+  host ElevenLabs atau CDN yang terdokumentasi untuk ElevenLabs. URL yang datang dari respons pihak
+  ketiga tidak diperlakukan sebagai tepercaya.
 - CORS mati kecuali Anda mengisi `-cors-origin`.
 
 ---

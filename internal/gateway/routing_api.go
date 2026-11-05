@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
@@ -11,6 +12,10 @@ import (
 // draws, in one response. It is deliberately one snapshot — clients, keys,
 // shares and "next up" — so the two sides of the graph always describe the
 // same traffic window and the same picker state.
+//
+// Keys are grouped by provider, and each provider's share is computed against
+// its own providers' traffic: a Cartesia key never shows a share of
+// ElevenLabs' requests, because rotation is per provider.
 func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	since := time.Now().Add(-24 * time.Hour).Unix()
@@ -45,10 +50,6 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database unavailable")
 		return
 	}
-	nextID, err := s.store.PickPreview(ctx)
-	if err != nil {
-		s.logError("routing: pick preview", err)
-	}
 	gate, err := s.store.Gate(ctx)
 	if err != nil {
 		s.logError("routing: gate", err)
@@ -56,41 +57,55 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Totals first, so each side's share adds up to 1.
-	var keyTotal, clientTotal int64
-	for _, traffic := range byKey {
-		keyTotal += traffic.Requests
+	// Totals first, so each side's share adds up to 1 per provider.
+	keyTotal := map[string]int64{}
+	for _, key := range keys {
+		keyTotal[key.Provider] += byKey[key.ID].Requests
 	}
+	var clientTotal int64
 	for _, traffic := range byClient {
 		clientTotal += traffic.Requests
 	}
 
 	now := time.Now()
-	type keyNode struct {
-		keyView
-		Success24h int64 `json:"success24h"`
-		Chars24h   int64 `json:"chars24h"`
-		Latency24h int64 `json:"avgLatencyMs24h"`
-		NextUp     bool  `json:"nextUp"`
+	nextUp := map[string]int64{}
+	for _, p := range s.providers.Providers() {
+		id, err := s.store.PickPreviewFor(ctx, p.Name())
+		if err != nil {
+			s.logError("routing: pick preview", err)
+			continue
+		}
+		nextUp[p.Name()] = id
 	}
-	keyNodes := make([]keyNode, 0, len(keys))
+
+	keyNodes := make([]store.KeyView, 0, len(keys))
 	for _, key := range keys {
 		traffic := byKey[key.ID]
 		share := 0.0
-		if keyTotal > 0 {
-			share = float64(traffic.Requests) / float64(keyTotal)
+		if keyTotal[key.Provider] > 0 {
+			share = float64(traffic.Requests) / float64(keyTotal[key.Provider])
 		}
-		node := keyNode{
-			keyView:    toKeyView(key, now),
-			Success24h: traffic.Success,
-			Chars24h:   traffic.Chars,
-			Latency24h: traffic.AvgLatency,
-		}
-		node.Requests24h = traffic.Requests
-		node.Share = share
-		node.Eligible = key.Eligible(now)
-		node.NextUp = key.ID == nextID
-		keyNodes = append(keyNodes, node)
+		keyNodes = append(keyNodes, store.KeyView{
+			ID:            key.ID,
+			Label:         key.Label,
+			Provider:      key.Provider,
+			MaskedSecret:  maskSecret(key.Secret),
+			IsActive:      key.IsActive,
+			Priority:      key.Priority,
+			Strikes:       key.Strikes,
+			CooldownUntil: key.CooldownUntil,
+			Cooling:       key.Cooling(now),
+			LastError:     key.LastError,
+			LastUsedAt:    key.LastUsedAt,
+			CreatedAt:     key.CreatedAt,
+			Requests24h:   traffic.Requests,
+			Share:         share,
+			Eligible:      key.Eligible(now),
+			NextUp:        nextUp[key.Provider] != 0 && key.ID == nextUp[key.Provider],
+			Success24h:    traffic.Success,
+			Chars24h:      traffic.Chars,
+			Latency24h:    traffic.AvgLatency,
+		})
 	}
 
 	type clientNode struct {
@@ -114,13 +129,39 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Per-provider request counts, so the console can say who answered.
+	providerRows := make([]map[string]any, 0, len(s.providers.Providers()))
+	for _, p := range s.providers.Providers() {
+		stats := usage.Providers[p.Name()]
+		total, active := 0, 0
+		for _, key := range keys {
+			if key.Provider != p.Name() {
+				continue
+			}
+			total++
+			if key.IsActive {
+				active++
+			}
+		}
+		providerRows = append(providerRows, map[string]any{
+			"name":        p.Name(),
+			"label":       p.Label(),
+			"requests24h": stats.Requests,
+			"success24h":  stats.Success,
+			"chars24h":    stats.Chars,
+			"keysTotal":   total,
+			"keysActive":  active,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generatedAt": time.Now().Unix(),
 		"windowHours": 24,
 		"strategy":    strategy.String(),
 		"strategies":  store.StrategyNames(),
 		"rotation":    strategy.String(),
-		"nextKeyId":   nextID,
+		"nextKeyId":   nextUp[s.defaultProviderName()],
+		"providers":   providerRows,
 		"gateway": map[string]any{
 			"requests24h":      usage.Requests24h,
 			"success24h":       usage.Success24h,
@@ -136,6 +177,13 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) defaultProviderName() string {
+	if p := s.providers.Default(); p != nil {
+		return p.Name()
+	}
+	return ""
+}
+
 func countActiveClients(clients []store.ClientKey, now time.Time) int {
 	active := 0
 	for _, key := range clients {
@@ -145,3 +193,5 @@ func countActiveClients(clients []store.ClientKey, now time.Time) int {
 	}
 	return active
 }
+
+var _ provider.Provider

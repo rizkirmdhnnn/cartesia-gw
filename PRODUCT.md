@@ -47,7 +47,7 @@ behind aaPanel + Nginx or Caddy, inside a Docker container.
 
 | Surface | Mode | Purpose |
 |---|---|---|
-| Console (six pages: Overview, Synthesize, Riwayat, Cartesia Keys, Client Keys, Akun) | Operate | Run and audit the gateway |
+| Console (six pages: Overview, Synthesize, Riwayat, Upstream Keys, Client Keys, Akun) | Operate | Run and audit the gateway |
 | Login gate (sign in, forced password change) | Operate | Access control with a clear first-run path |
 | README / docs | Read | Deploy and understand |
 

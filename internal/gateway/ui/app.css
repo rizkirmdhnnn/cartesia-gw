@@ -712,6 +712,19 @@ output, .muted { color: var(--ink-48); font-size: 12px; }
   color: var(--lime-ink);
 }
 
+.routing-node .rn-tag.applied,
+.routing-node .rn-tag.provider {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  background: var(--paper);
+  color: var(--ink-64);
+  border: var(--rule) solid var(--ink-14);
+  text-transform: none;
+}
+
 .routing-node .rn-pri { display: inline-flex; align-items: center; gap: 3px; }
 
 .routing-node .rn-pri input {
@@ -902,11 +915,41 @@ details.curl pre {
 .library { display: flex; flex-direction: column; }
 
 .filters {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 170px 160px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-bottom: 12px;
 }
+
+.filters .search-input-wrap { flex: 1 1 220px; min-width: 0; }
+.filters #langFilter { flex: 0 1 170px; }
+.filters #genderFilter { flex: 0 1 160px; }
+.filters .segments { flex: 0 0 auto; align-self: stretch; }
+.filters .segments button { height: 100%; }
+
+/* The voice panel's footer actions are compact text buttons, not form
+   controls: they sit inside a panel foot and must not inherit the field
+   styling the inputs above use. */
+.panel-foot .btn.tiny {
+  width: auto;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  flex: 0 0 auto;
+}
+
+/* Account page: the fallback-voice block is a sub-section, not a panel. */
+.voices-default-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 26px;
+  padding-top: 16px;
+  border-top: var(--heavy) solid var(--ink);
+}
+.voices-default-head h3 { font-family: var(--font-display); font-size: 16px; }
+.account-voices-desc { margin: 6px 0 12px; max-width: 70ch; }
+
 
 .search-input-wrap { position: relative; }
 .search-input-wrap .input-search-icon {
@@ -996,6 +1039,46 @@ details.curl pre {
 }
 
 .tag.tag-pro { background: var(--ink); color: var(--lime); border-color: var(--ink); }
+
+/* Provider label: one word, mono, framed. It replaces a colour code, because
+   the system has exactly one chroma and it is already spoken for. */
+.tag.tag-provider { color: var(--ink); border-color: var(--ink); background: var(--paper); }
+.tag.tag-provider[data-provider="elevenlabs"] { border-style: dashed; }
+
+/* ── Provider segments ──────────────────────────────────────────────────── */
+/* A segmented control: the selected provider is inked, the rest are outlined.
+   Used by the key table and the voice filter, never nested. */
+
+.segments { display: inline-flex; border: var(--rule) solid var(--ink); }
+.segments button {
+  appearance: none;
+  border: 0;
+  border-right: var(--rule) solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.segments button:last-child { border-right: 0; }
+.segments button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.segments button[aria-pressed="true"] .seg-count { color: var(--lime); }
+.segments .seg-count { font-weight: 400; color: var(--ink-48); margin-left: 4px; }
+.segments button:focus-visible { outline: 2px solid var(--lime); outline-offset: -2px; }
+
+/* Adjustment note in history: what the gateway changed to serve the call. */
+.adjust-note {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-64);
+  border-bottom: 1px dotted var(--ink-32);
+  cursor: help;
+}
 
 .voice-card .vc-desc { font-size: 12px; color: var(--ink-48); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

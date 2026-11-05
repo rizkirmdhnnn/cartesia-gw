@@ -3,34 +3,44 @@
 package gateway
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"sync"
 
-	"github.com/rizkirmdhnnn/cartesia-gw/internal/cartesia"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/config"
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
-// Server wires the store and the Cartesia client into an http.Handler.
+// Server wires the store and the provider registry into an http.Handler.
 type Server struct {
-	cfg     *config.Config
-	store   *store.Store
-	cart    *cartesia.Client
-	logger  *slog.Logger
-	voices  *voiceCache
-	assets  map[string]*asset
-	index   *asset
-	handler http.Handler
+	cfg       *config.Config
+	store     *store.Store
+	providers *provider.Registry
+	logger    *slog.Logger
+	voices    *voiceCache
+	assets    map[string]*asset
+	index     *asset
+	handler   http.Handler
 
 	// Login throttling: a fixed-window counter per client address.
 	loginMu       sync.Mutex
 	loginFailures map[string]loginEntry
 
-	// previewFetch is the client used for voice preview files. It is a field so
-	// a test can stub the network hop while keeping the host guard in place.
-	previewFetch func(context.Context, string, string) (*http.Response, error)
+	// previewResolverOverride replaces the catalogue lookup in tests; nil in
+	// production, where lookupPreviewURL runs with its host guard intact.
+	previewResolverOverride previewResolver
+
+	// providerOverride replaces a provider for one test. Nil in production.
+	providerOverride map[string]provider.Provider
+}
+
+// providerByName returns the override when a test installed one.
+func (s *Server) providerByName(name string) (provider.Provider, bool) {
+	if p, ok := s.providerOverride[name]; ok {
+		return p, true
+	}
+	return s.providers.Get(name)
 }
 
 // dashboardAssets maps the served URL path to the embedded file and its type.
@@ -38,18 +48,19 @@ var dashboardAssets = map[string]struct {
 	file        string
 	contentType string
 }{
-	"/":            {"index.html", "text/html; charset=utf-8"},
-	"/app.css":     {"app.css", "text/css; charset=utf-8"},
-	"/app.js":      {"app.js", "text/javascript; charset=utf-8"},
-	"/auth.js":     {"auth.js", "text/javascript; charset=utf-8"},
-	"/router.js":   {"router.js", "text/javascript; charset=utf-8"},
-	"/routing.js":  {"routing.js", "text/javascript; charset=utf-8"},
-	"/clients.js":  {"clients.js", "text/javascript; charset=utf-8"},
-	"/favicon.ico": {"favicon.svg", "image/svg+xml"},
+	"/":             {"index.html", "text/html; charset=utf-8"},
+	"/app.css":      {"app.css", "text/css; charset=utf-8"},
+	"/app.js":       {"app.js", "text/javascript; charset=utf-8"},
+	"/auth.js":      {"auth.js", "text/javascript; charset=utf-8"},
+	"/router.js":    {"router.js", "text/javascript; charset=utf-8"},
+	"/routing.js":   {"routing.js", "text/javascript; charset=utf-8"},
+	"/clients.js":   {"clients.js", "text/javascript; charset=utf-8"},
+	"/providers.js": {"providers.js", "text/javascript; charset=utf-8"},
+	"/favicon.ico":  {"favicon.svg", "image/svg+xml"},
 }
 
 // New builds the server and its route table.
-func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *slog.Logger) (*Server, error) {
+func New(cfg *config.Config, st *store.Store, providers *provider.Registry, logger *slog.Logger) (*Server, error) {
 	assets := make(map[string]*asset, len(dashboardAssets))
 	for urlPath, spec := range dashboardAssets {
 		loaded, err := loadAsset(spec.file, spec.contentType)
@@ -62,12 +73,11 @@ func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *s
 	s := &Server{
 		cfg:           cfg,
 		store:         st,
-		cart:          client,
+		providers:     providers,
 		logger:        logger,
 		voices:        newVoiceCache(256, voiceCacheTTL),
 		assets:        assets,
 		index:         assets["/"],
-		previewFetch:  client.FetchPreview,
 		loginFailures: make(map[string]loginEntry),
 	}
 
@@ -115,6 +125,7 @@ func New(cfg *config.Config, st *store.Store, client *cartesia.Client, logger *s
 	mux.HandleFunc("GET /router.js", s.handleAsset("/router.js"))
 	mux.HandleFunc("GET /routing.js", s.handleAsset("/routing.js"))
 	mux.HandleFunc("GET /clients.js", s.handleAsset("/clients.js"))
+	mux.HandleFunc("GET /providers.js", s.handleAsset("/providers.js"))
 	mux.HandleFunc("GET /favicon.ico", s.handleAsset("/favicon.ico"))
 	mux.HandleFunc("GET /", s.handleIndex)
 
@@ -138,6 +149,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":            "ok",
 		"version":           s.cfg.Version,
 		"cartesiaVersion":   s.cfg.CartesiaVersion,
+		"providers":         s.providers.Names(),
 		"keys":              keys,
 		"retentionDays":     int(s.cfg.Retention.Hours() / 24),
 		"gatewayTokenIsSet": s.cfg.GatewayToken != "",

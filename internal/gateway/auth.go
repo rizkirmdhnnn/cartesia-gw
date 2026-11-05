@@ -163,7 +163,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // its assets carry no secret; the login screen needs them.
 func publicPath(path string) bool {
 	switch path {
-	case "/", "/app.css", "/app.js", "/auth.js", "/router.js", "/routing.js", "/clients.js", "/favicon.ico", "/healthz":
+	case "/", "/app.css", "/app.js", "/auth.js", "/router.js", "/routing.js", "/clients.js",
+		"/providers.js", "/favicon.ico", "/healthz":
 		return true
 	}
 	return strings.HasPrefix(path, "/auth/")

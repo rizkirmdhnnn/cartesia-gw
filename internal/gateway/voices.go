@@ -7,13 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/rizkirmdhnnn/cartesia-gw/internal/cartesia"
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
@@ -25,6 +24,24 @@ const (
 
 // genders is the closed set Cartesia documents for the voice filter.
 var genders = []string{"masculine", "feminine", "gender_neutral"}
+
+func isCartesiaGender(gender string) bool {
+	for _, known := range genders {
+		if gender == known {
+			return true
+		}
+	}
+	return false
+}
+
+func parseLimit(raw string) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, errors.New("empty")
+	}
+	return strconv.Atoi(raw)
+}
+
+func itoa(value int) string { return strconv.Itoa(value) }
 
 // ttlCache is a bounded map with an expiry. Every cache in this process is one
 // of these: an unbounded map keyed by client input is a memory leak with a
@@ -82,62 +99,98 @@ func (c *ttlCache[V]) evictLocked() {
 	}
 }
 
-// voiceCache memoises the voice catalogue and the resolved preview file URLs.
+// voiceCache memoises the voice catalogue, the resolved preview file URLs and
+// the name→id index.
 type voiceCache struct {
-	pages    *ttlCache[cartesia.VoicesPage]
+	pages    *ttlCache[provider.VoicesPage]
 	previews *ttlCache[string]
+	index    *ttlCache[voiceNameResult]
 }
 
 func newVoiceCache(max int, ttl time.Duration) *voiceCache {
 	return &voiceCache{
-		pages:    newTTLCache[cartesia.VoicesPage](max, ttl),
-		previews: newTTLCache[string](max, ttl),
+		pages:    newTTLCache[provider.VoicesPage](max, ttl),
+		previews: newTTLCache[string](max*4, ttl),
+		index:    newTTLCache[voiceNameResult](max*2, ttl),
 	}
 }
 
-// listVoices answers from cache when it can, otherwise calls Cartesia once. It
-// borrows a key through the same rotation picker the speech path uses, so a
-// key parked in cooldown is not chosen for a lookup either.
-func (s *Server) listVoices(ctx context.Context, query url.Values) (cartesia.VoicesPage, error) {
-	cacheKey := query.Encode()
-	if page, ok := s.voices.pages.get(cacheKey); ok {
-		return page, nil
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		key, _, err := s.store.PickKey(ctx)
-		if err != nil {
-			return cartesia.VoicesPage{}, err
-		}
-		page, err := s.cart.ListVoices(ctx, key.Secret, query)
-		if err == nil {
-			s.voices.pages.put(cacheKey, page)
-			return page, nil
-		}
-		lastErr = err
-		var upstream *cartesia.UpstreamError
-		if errors.As(err, &upstream) && retryable(upstream.Status) {
-			_ = s.store.MarkFailure(ctx, key.ID, upstream.Status, upstream.Message, 0)
-			continue
-		}
-		return cartesia.VoicesPage{}, err
-	}
-	return cartesia.VoicesPage{}, lastErr
+// normalizeVoiceKey is the case- and space-insensitive form voice names and
+// ids are compared in.
+func normalizeVoiceKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 // handleVoices serves GET /v1/audio/voices.
+//
+// One endpoint lists every provider's voices, each entry tagged with its
+// provider, so a client does not have to know which vendors the gateway
+// fronts. ?provider= narrows it to one. When a provider fails (a revoked key,
+// an outage) the response stays 200 with the voices that did load plus a
+// warning, because one broken vendor should not hide the other.
 func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
-	page, err := s.listVoices(r.Context(), voiceQuery(r))
+	targets, err := s.voiceTargets(r)
 	if err != nil {
-		s.writeVoiceError(w, err)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	data := make([]map[string]any, 0, 100)
+	warnings := make([]map[string]string, 0)
+	hasMore := false
+	nextPage := ""
+	for _, p := range targets {
+		page, err := s.listProviderVoices(r.Context(), p, voiceQueryFor(p, queryValues(r.URL.Query())))
+		if err != nil {
+			warnings = append(warnings, map[string]string{"provider": p.Name(), "error": voiceErrorText(err)})
+			continue
+		}
+		for _, voice := range page.Data {
+			voice["provider"] = p.Name()
+			data = append(data, voice)
+		}
+		if page.HasMore {
+			hasMore = true
+			if nextPage == "" {
+				nextPage = page.NextPage
+			}
+		}
+	}
+	if len(targets) > 0 && len(warnings) == len(targets) {
+		s.writeVoiceError(w, errors.New(warnings[0]["error"]))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data":      page.Data,
-		"has_more":  page.HasMore,
-		"next_page": page.NextPage,
+		"object":    "list",
+		"data":      data,
+		"has_more":  hasMore,
+		"next_page": nextPageOrNil(nextPage),
+		"providers": s.providers.Names(),
+		"warnings":  warnings,
 	})
+}
+
+func nextPageOrNil(page string) any {
+	if page == "" {
+		return nil
+	}
+	return page
+}
+
+// voiceTargets decides which providers a listing covers.
+func (s *Server) voiceTargets(r *http.Request) ([]provider.Provider, error) {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
+	if raw == "" {
+		return s.providers.Providers(), nil
+	}
+	if canonical, ok := aliasProvider(raw); ok {
+		raw = canonical
+	}
+	if p, found := s.providers.Get(raw); found {
+		return []provider.Provider{p}, nil
+	}
+	return nil, fmt.Errorf("provider %q is not configured; known: %s", raw, strings.Join(s.providers.Names(), ", "))
 }
 
 // handleVoicesAPI is the dashboard's view of the same data.
@@ -145,9 +198,9 @@ func (s *Server) handleVoicesAPI(w http.ResponseWriter, r *http.Request) {
 	s.handleVoices(w, r)
 }
 
-// handleVoicePreview streams a voice's preview file. The URL comes from
-// Cartesia and is fetched server-side because it requires the same
-// Authorization header the browser does not have.
+// handleVoicePreview streams a voice's preview file. The URL comes from the
+// provider and is fetched server-side because it requires the same credential
+// the browser does not have.
 func (s *Server) handleVoicePreview(w http.ResponseWriter, r *http.Request) {
 	voiceID := strings.TrimSpace(r.PathValue("id"))
 	if voiceID == "" {
@@ -155,9 +208,16 @@ func (s *Server) handleVoicePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	previewURL, ok := s.voices.previews.get(voiceID)
+	p, err := s.previewProvider(r, voiceID)
+	if err != nil {
+		s.writeVoiceError(w, err)
+		return
+	}
+
+	cacheKey := p.Name() + "|" + voiceID
+	previewURL, ok := s.voices.previews.get(cacheKey)
 	if !ok {
-		resolved, err := s.resolvePreviewURL(r.Context(), voiceID)
+		resolved, err := s.previewURLFor(r.Context(), p, voiceID)
 		if err != nil {
 			s.writeVoiceError(w, err)
 			return
@@ -166,23 +226,27 @@ func (s *Server) handleVoicePreview(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "that voice has no preview file")
 			return
 		}
-		s.voices.previews.put(voiceID, resolved)
+		s.voices.previews.put(cacheKey, resolved)
 		previewURL = resolved
 	}
 
-	key, _, err := s.store.PickKey(r.Context())
+	key, _, err := s.store.PickKeyFor(r.Context(), p.Name())
 	if err != nil {
 		s.writeVoiceError(w, err)
 		return
 	}
-	resp, err := s.previewFetch(r.Context(), key.Secret, previewURL)
+	fetcher, ok := s.providerByName(p.Name())
+	if !ok {
+		fetcher = p
+	}
+	resp, err := fetcher.FetchPreview(r.Context(), key.Secret, previewURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		writeError(w, clientStatus(resp.StatusCode), fmt.Sprintf("cartesia returned %d for the preview", resp.StatusCode))
+		writeError(w, clientStatus(resp.StatusCode), fmt.Sprintf("%s returned %d for the preview", p.Name(), resp.StatusCode))
 		return
 	}
 
@@ -196,67 +260,62 @@ func (s *Server) handleVoicePreview(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.CopyBuffer(w, io.LimitReader(resp.Body, previewMaxBytes), make([]byte, streamBufSize))
 }
 
-// resolvePreviewURL looks a voice up by id. Cartesia's q parameter searches by
-// name, description and id, so one call answers it.
-func (s *Server) resolvePreviewURL(ctx context.Context, voiceID string) (string, error) {
-	query := url.Values{}
-	query.Set("q", voiceID)
-	query.Set("limit", "1")
-	query.Add("expand[]", "preview_file_url")
-
-	page, err := s.listVoices(ctx, query)
-	if err != nil {
-		return "", err
+// previewProvider picks the provider whose host serves a voice preview: an
+// explicit ?provider= wins, then the id's shape, then the last provider with
+// a key.
+func (s *Server) previewProvider(r *http.Request, voiceID string) (provider.Provider, error) {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("provider")))
+	if raw != "" {
+		if alias, ok := aliasProvider(raw); ok {
+			raw = alias
+		}
+		if p, found := s.providers.Get(raw); found {
+			return p, nil
+		}
+		return nil, fmt.Errorf("provider %q is not configured", raw)
 	}
-	for _, voice := range page.Refs() {
-		if voice.ID == voiceID && voice.PreviewFileURL != nil {
-			return *voice.PreviewFileURL, nil
+	if owner := provider.OwnerOf(voiceID); owner != "" {
+		if p, found := s.providers.Get(owner); found {
+			return p, nil
 		}
 	}
-	return "", nil
-}
-
-// voiceQuery validates the query parameters the dashboard is allowed to pass
-// through. Anything else is dropped rather than forwarded.
-func voiceQuery(r *http.Request) url.Values {
-	in := r.URL.Query()
-	out := url.Values{}
-	out.Add("expand[]", "preview_file_url")
-
-	if q := strings.TrimSpace(in.Get("q")); q != "" {
-		out.Set("q", truncate(q, 200))
-	}
-	if language := strings.TrimSpace(in.Get("language")); language != "" {
-		out.Set("language", truncate(language, 32))
-	}
-	if gender := strings.ToLower(strings.TrimSpace(in.Get("gender"))); slices.Contains(genders, gender) {
-		out.Set("gender", gender)
-	}
-	if cursor := strings.TrimSpace(in.Get("starting_after")); cursor != "" {
-		out.Set("starting_after", truncate(cursor, 64))
-	}
-	limit := 100
-	if raw := in.Get("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			limit = min(parsed, voicePageMax)
+	var chosen provider.Provider
+	for _, p := range s.providers.Providers() {
+		keys, err := s.store.KeysFor(r.Context(), p.Name())
+		if err == nil && len(keys) > 0 {
+			chosen = p
 		}
 	}
-	out.Set("limit", strconv.Itoa(limit))
-	return out
+	if chosen == nil {
+		return nil, store.ErrNoKeys
+	}
+	return chosen, nil
 }
 
 func (s *Server) writeVoiceError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNoKeys) {
-		writeError(w, http.StatusServiceUnavailable, "no active Cartesia API key: open the dashboard and add one")
+		writeError(w, http.StatusServiceUnavailable, "no active API key: open the dashboard and add one")
 		return
 	}
-	var upstream *cartesia.UpstreamError
-	if errors.As(err, &upstream) {
-		writeError(w, clientStatus(upstream.Status), upstream.Error())
+	if status, ok := upstreamStatus(err); ok {
+		writeError(w, clientStatus(status), err.Error())
 		return
 	}
 	s.logError("list voices", err)
 	writeError(w, http.StatusBadGateway, err.Error())
+}
+
+func voiceErrorText(err error) string {
+	if errors.Is(err, store.ErrNoKeys) {
+		return "no active API key for this provider"
+	}
+	return err.Error()
+}
+
+// resolveProviderPreviewURL resolves one voice's preview URL without fetching
+// it. Exported for the preview tests.
+func (s *Server) resolveProviderPreviewURL(ctx context.Context, p provider.Provider, voiceID string) (string, error) {
+	return s.previewURLFor(ctx, p, voiceID)
 }
 
 func truncate(value string, max int) string {
@@ -265,3 +324,5 @@ func truncate(value string, max int) string {
 	}
 	return value[:max]
 }
+
+var _ = url.Values{}

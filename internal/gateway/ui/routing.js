@@ -62,6 +62,7 @@ function routingKeyNode(key, strategy) {
       <span class="rn-name">${escapeHTML(key.label || key.maskedSecret)}</span>
       <span class="rn-meta">
         ${key.nextUp ? '<span class="rn-tag">berikutnya</span>' : ''}
+        ${key.provider ? `<span class="rn-tag provider">${escapeHTML(providerLabel(key.provider))}</span>` : ''}
         ${key.requests24h || 0} req · ${key.cooling ? 'cooldown' : key.isActive ? 'siap' : 'nonaktif'}
         ${showPriority ? `<span class="rn-pri">P<input type="number" min="0" max="100" step="1"
             value="${key.priority}" data-priority-for="${key.id}" title="Prioritas (0 = paling dulu)"
@@ -91,7 +92,7 @@ function renderRouting() {
     : '<div class="routing-empty">Belum ada client key.</div>';
   $('routingKeys').innerHTML = keys.length
     ? keys.map((key) => routingKeyNode(key, strategy)).join('')
-    : '<div class="routing-empty">Belum ada Cartesia key.</div>';
+    : '<div class="routing-empty">Belum ada key upstream.</div>';
 
   queueRoutingLayout();
 }

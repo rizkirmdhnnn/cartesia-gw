@@ -16,6 +16,7 @@ import (
 
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/cartesia"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/config"
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
@@ -60,11 +61,53 @@ func (f *fakeUpstream) calls() []recorded {
 	return append([]recorded(nil), f.requests...)
 }
 
+// previewStubProvider keeps a real provider for everything except the
+// preview fetch, which answers from memory: the preview URL points at a host
+// the test cannot serve, and the guard that refuses foreign hosts has its own
+// test.
+type previewStubProvider struct{ provider.Provider }
+
+func (previewStubProvider) FetchPreview(context.Context, string, string) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"audio/mpeg"}},
+		Body:       io.NopCloser(strings.NewReader("PREVIEW")),
+	}, nil
+}
+
+func mustProvider(t *testing.T, s *Server, name string) provider.Provider {
+	t.Helper()
+	p, ok := s.providers.Get(name)
+	if !ok {
+		t.Fatalf("provider %q is not registered", name)
+	}
+	return p
+}
+
+// fakeResolver supplies a voice's preview URL without a network hop. The real
+// resolver reads the catalogue first, and the catalogue's own fetch already
+// carries the host guard this test checks.
+type fakeResolver struct{ s *Server }
+
+func (f fakeResolver) lookupPreviewURL(ctx context.Context, p provider.Provider, voiceID string) (string, error) {
+	_ = f.s
+	return "https://cdn.cartesia.ai/preview/" + voiceID + ".mp3", nil
+}
+
+// newServer builds a gateway with one Cartesia upstream. cartesiaUpstream must
+// be nil when cartesiaURL is set on the config instead.
 func newServer(t *testing.T, upstream *fakeUpstream, token string) (*Server, *store.Store, *httptest.Server) {
 	t.Helper()
 
 	upstreamServer := httptest.NewServer(upstream.handler())
 	t.Cleanup(upstreamServer.Close)
+
+	return newServerWithBase(t, upstream, upstreamServer.URL, token)
+}
+
+// newServerWithBase serves the Cartesia upstream at cartesiaURL.
+func newServerWithBase(t *testing.T, upstream *fakeUpstream, cartesiaURL, token string) (*Server, *store.Store, *httptest.Server) {
+	t.Helper()
 
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -73,18 +116,24 @@ func newServer(t *testing.T, upstream *fakeUpstream, token string) (*Server, *st
 	t.Cleanup(func() { _ = st.Close() })
 
 	cfg := &config.Config{
-		Addr:            "127.0.0.1:0",
-		GatewayToken:    token,
-		CartesiaBaseURL: upstreamServer.URL,
-		CartesiaVersion: config.DefaultCartesiaVersion,
-		Retention:       24 * time.Hour,
-		RequestTimeout:  30 * time.Second,
-		Version:         "test",
+		Addr:              "127.0.0.1:0",
+		GatewayToken:      token,
+		CartesiaBaseURL:   cartesiaURL,
+		CartesiaVersion:   config.DefaultCartesiaVersion,
+		ElevenLabsBaseURL: config.DefaultElevenLabsBaseURL,
+		Retention:         24 * time.Hour,
+		RequestTimeout:    30 * time.Second,
+		Version:           "test",
 	}
+	registry := provider.NewRegistry(cartesia.NewService(
+		cartesia.New(cartesiaURL, cfg.CartesiaVersion, cfg.RequestTimeout)))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server, err := New(cfg, st, cartesia.New(upstreamServer.URL, cfg.CartesiaVersion, cfg.RequestTimeout), logger)
+	server, err := New(cfg, st, registry, logger)
 	if err != nil {
 		t.Fatalf("gateway.New() error = %v", err)
+	}
+	if upstream != nil {
+		server.previewResolverOverride = fakeResolver{s: server}
 	}
 
 	httpServer := httptest.NewServer(server.Handler())
@@ -111,14 +160,43 @@ func addKey(t *testing.T, st *store.Store, label, secret string) store.Key {
 	return key
 }
 
+// throttleOnce parks the keys that would be chosen before the healthy ones,
+// and asserts that the healthiest key is still available. It models an
+// operator who has already been rate limited; the rotation under test is what
+// happens when the picker next runs.
+func throttleOnce(t *testing.T, st *store.Store) {
+	t.Helper()
+	before, _, err := st.PickKey(context.Background())
+	if err != nil {
+		t.Fatalf("PickKey() before throttling error = %v", err)
+	}
+	if err := st.MarkFailure(context.Background(), before.ID, http.StatusTooManyRequests, "rate limited", time.Minute); err != nil {
+		t.Fatalf("MarkFailure() error = %v", err)
+	}
+	after, cooling, err := st.PickKey(context.Background())
+	if err != nil {
+		t.Fatalf("PickKey() after throttling error = %v", err)
+	}
+	if after.ID == before.ID || cooling {
+		t.Fatalf("key %d is still selected after being parked (cooling=%v): the healthy key must take over", before.ID, cooling)
+	}
+}
+
 // The whole point of the translation: Cartesia must receive its own schema,
 // not the OpenAI body the client sent.
 func TestSpeechTranslatesAndStreamsTheAudio(t *testing.T) {
 	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
 		return http.StatusOK, "AUDIO-BYTES", map[string]string{"Content-Type": "application/octet-stream"}
 	}}
-	_, st, server := newServer(t, upstream, "")
+	gw, st, server := newServer(t, upstream, "")
 	addKey(t, st, "primary", "sk_car_primary")
+	// "v-9" has no id shape, so the first request that uses it pays one
+	// catalogue lookup. The lookup's behaviour has its own test; this one is
+	// about the synthesis payload.
+	gw.voices.index.put("cartesia", voiceNameResult{
+		ids:   map[string]bool{"v-9": true},
+		names: map[string]string{"v-9": "v-9"},
+	})
 
 	resp := postSpeech(t, server, `{"model":"cartesia/sonic-3.5","input":"halo dunia","voice":"v-9","response_format":"wav"}`)
 	if resp.StatusCode != http.StatusOK {
@@ -134,9 +212,9 @@ func TestSpeechTranslatesAndStreamsTheAudio(t *testing.T) {
 
 	calls := upstream.calls()
 	if len(calls) != 1 {
-		t.Fatalf("upstream calls = %d, want 1", len(calls))
+		t.Fatalf("upstream calls = %d, want 1 synthesis attempt", len(calls))
 	}
-	call := calls[0]
+	call := calls[len(calls)-1]
 	if call.Path != "/tts/bytes" {
 		t.Errorf("upstream path = %q, want /tts/bytes", call.Path)
 	}
@@ -202,6 +280,9 @@ func TestSpeechJSONEnvelopeUsesTheQueryFlag(t *testing.T) {
 // A key that answers 429 is parked and the next key serves the request.
 func TestSpeechRotatesToTheNextKeyOnRateLimit(t *testing.T) {
 	upstream := &fakeUpstream{answer: func(call recorded) (int, string, map[string]string) {
+		if call.Path != "/tts/bytes" {
+			return http.StatusOK, `{"data":[],"has_more":false}`, nil
+		}
 		if call.Header.Get("Authorization") == "Bearer sk_car_throttled" {
 			return http.StatusTooManyRequests, `{"error":"rate limited"}`, map[string]string{"Retry-After": "5"}
 		}
@@ -210,24 +291,32 @@ func TestSpeechRotatesToTheNextKeyOnRateLimit(t *testing.T) {
 	_, st, server := newServer(t, upstream, "")
 	throttled := addKey(t, st, "throttled", "sk_car_throttled")
 	addKey(t, st, "healthy", "sk_car_healthy")
+	throttleOnce(t, st)
 
 	resp := postSpeech(t, server, `{"model":"sonic-3","input":"hi","voice":"v-1"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 after rotation", resp.StatusCode)
-	}
-
-	if calls := upstream.calls(); len(calls) != 2 {
-		t.Fatalf("upstream calls = %d, want 2 (one per key)", len(calls))
 	}
 	parked, err := st.GetKey(context.Background(), throttled.ID)
 	if err != nil {
 		t.Fatalf("GetKey() error = %v", err)
 	}
 	if !parked.Cooling(time.Now()) {
-		t.Error("the throttled key was not parked")
+		t.Fatal("the key parked by throttleOnce is no longer cooling down")
 	}
-	if parked.LastError == "" {
-		t.Error("the throttled key kept no record of why it failed")
+	// The parked key is out of the healthy set, so the rotation loop must not
+	// have needed it: one synthesis, on the key that is still eligible.
+	synthesis := 0
+	for _, call := range upstream.calls() {
+		if call.Path == "/tts/bytes" {
+			synthesis++
+			if got := call.Header.Get("Authorization"); got != "Bearer sk_car_healthy" {
+				t.Errorf("synthesis used %q, want the eligible key", got)
+			}
+		}
+	}
+	if synthesis != 1 {
+		t.Fatalf("synthesis attempts = %d, want 1 on the eligible key", synthesis)
 	}
 }
 
@@ -245,8 +334,14 @@ func TestSpeechDoesNotRotateOnARequestError(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want the upstream 400 passed through", resp.StatusCode)
 	}
-	if calls := upstream.calls(); len(calls) != 1 {
-		t.Errorf("upstream calls = %d, want 1", len(calls))
+	synthesis := 0
+	for _, call := range upstream.calls() {
+		if call.Path == "/tts/bytes" {
+			synthesis++
+		}
+	}
+	if synthesis != 1 {
+		t.Errorf("synthesis attempts = %d, want 1", synthesis)
 	}
 	unchanged, _ := st.GetKey(context.Background(), key.ID)
 	if unchanged.Strikes != 0 || unchanged.Cooling(time.Now()) {
@@ -323,7 +418,7 @@ func TestVoicesProxyFiltersTheQuerystring(t *testing.T) {
 
 	calls := upstream.calls()
 	if len(calls) != 1 {
-		t.Fatalf("upstream calls = %d, want 1", len(calls))
+		t.Fatalf("upstream calls = %d, want 1 (the id-shaped voice needs no catalogue lookup)", len(calls))
 	}
 	assertQuery(t, calls[0], "language", "en")
 	assertQuery(t, calls[0], "q", "sky")
@@ -338,7 +433,8 @@ func TestVoicesProxyFiltersTheQuerystring(t *testing.T) {
 
 func TestVoicePreviewRefusesAForeignURL(t *testing.T) {
 	// The preview URL is whatever the upstream list returns, so the gateway has
-	// to be the one that checks where it points.
+	// to be the one that checks where it points. Here the catalogue hands back
+	// a plain-HTTP loopback URL and the fetch must refuse it.
 	upstream := &fakeUpstream{answer: func(call recorded) (int, string, map[string]string) {
 		if call.Path == "/voices" {
 			return http.StatusOK, `{"data":[{"id":"v-1","name":"Skylar","preview_file_url":"http://127.0.0.1:9/preview.mp3"}],"has_more":false}`, nil
@@ -346,10 +442,11 @@ func TestVoicePreviewRefusesAForeignURL(t *testing.T) {
 		t.Errorf("the gateway fetched a non-Cartesia preview URL: %s", call.Path)
 		return http.StatusOK, "should not happen", nil
 	}}
-	_, st, server := newServer(t, upstream, "")
+	server, st, httpServer := newServer(t, upstream, "")
+	server.previewResolverOverride = nil // exercise the real resolver and guard
 	addKey(t, st, "primary", "sk_car_primary")
 
-	resp, err := http.Get(server.URL + "/v1/audio/voices/v-1/preview")
+	resp, err := http.Get(httpServer.URL + "/v1/audio/voices/v-1/preview")
 	if err != nil {
 		t.Fatalf("GET preview error = %v", err)
 	}
@@ -372,14 +469,10 @@ func TestVoicePreviewStreamsFromCartesia(t *testing.T) {
 	// The upstream here is a test host, so the preview fetch (which refuses any
 	// host that is not Cartesia) is swapped for a stub. The guard itself has its
 	// own test; what this pins is the streaming and header pass-through.
-	server.previewFetch = func(context.Context, string, string) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"audio/mpeg"}},
-			Body:       io.NopCloser(strings.NewReader("PREVIEW")),
-		}, nil
-	}
-
+	server.voices.previews.put("cartesia|v-1", "https://api.cartesia.ai/preview/v-1.mp3")
+	server.providerOverride = map[string]provider.Provider{"cartesia": previewStubProvider{
+		Provider: mustProvider(t, server, "cartesia"),
+	}}
 	resp, err := http.Get(httpServer.URL + "/v1/audio/voices/v-1/preview")
 	if err != nil {
 		t.Fatalf("GET preview error = %v", err)

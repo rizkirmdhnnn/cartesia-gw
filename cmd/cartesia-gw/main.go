@@ -17,7 +17,9 @@ import (
 
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/cartesia"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/config"
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/elevenlabs"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/gateway"
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
@@ -77,7 +79,11 @@ func run() error {
 	go pruneLoop(ctx, st, cfg, logger)
 
 	client := cartesia.New(cfg.CartesiaBaseURL, cfg.CartesiaVersion, cfg.RequestTimeout)
-	server, err := gateway.New(cfg, st, client, logger)
+	providers := provider.NewRegistry(
+		cartesia.NewService(client),
+		elevenlabs.NewService(elevenlabs.New(cfg.ElevenLabsBaseURL, cfg.RequestTimeout)),
+	)
+	server, err := gateway.New(cfg, st, providers, logger)
 	if err != nil {
 		return err
 	}
