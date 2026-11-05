@@ -14,6 +14,10 @@ import (
 const (
 	settingRotation       = "rotation"
 	settingRotationCursor = "rotation_cursor"
+	// settingPromptLogin makes presentable requests ask for a credential even
+	// when none exists yet. It is off for loopback-only installs, which is why
+	// the previous release could run without any credential at all.
+	settingPromptLogin = "auth_prompt_login"
 )
 
 // Strategy is how the next API key is chosen.
@@ -31,6 +35,10 @@ const (
 	// StrategySticky keeps using one key until it is parked, so the other keys
 	// keep their quota untouched.
 	StrategySticky Strategy = "sticky"
+	// StrategyPriority tries keys in the operator's manual order: the lowest
+	// priority number first, least recently used among equals. It is how a
+	// "primary + overflow" pair is expressed without a second concept.
+	StrategyPriority Strategy = "priority"
 )
 
 // Strategies is the closed set the dashboard offers and the API accepts.
@@ -39,6 +47,7 @@ var Strategies = []Strategy{
 	StrategyRoundRobin,
 	StrategyRandom,
 	StrategySticky,
+	StrategyPriority,
 }
 
 // DefaultStrategy is what a fresh install uses. It is the behaviour this
@@ -75,6 +84,13 @@ type Option func(*Store)
 // not consulted again once the dashboard has written a value.
 func WithDefaultRotation(strategy Strategy) Option {
 	return func(s *Store) { s.defaultRotation = strategy }
+}
+
+func truncate(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max]
 }
 
 // GetSetting reads one setting. The second return value distinguishes "absent"
@@ -138,4 +154,25 @@ func (s *Store) rotationCursor(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 	return cursor, nil
+}
+
+// PromptLogin reports whether presentable requests must carry a credential
+// even when none exists yet. When false (the default on a loopback install
+// with no web-login reachable), an unauthenticated caller is let through only
+// on loopback; anything remote is refused.
+func (s *Store) PromptLogin(ctx context.Context) (bool, error) {
+	raw, ok, err := s.GetSetting(ctx, settingPromptLogin)
+	if err != nil || !ok {
+		return false, err
+	}
+	return raw == "1", nil
+}
+
+// SetPromptLogin stores the flag.
+func (s *Store) SetPromptLogin(ctx context.Context, on bool) error {
+	value := "0"
+	if on {
+		value = "1"
+	}
+	return s.SetSetting(ctx, settingPromptLogin, value)
 }

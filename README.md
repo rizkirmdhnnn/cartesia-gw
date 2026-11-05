@@ -123,9 +123,108 @@ envelope sendiri, yang hilang adalah struktur aslinya; teks pesannya tetap diter
 
 ---
 
+## Login dan client API keys
+
+Dua kredensial berbeda, dan itu disengaja:
+
+| Kredensial | Untuk apa | Disimpan di |
+|---|---|---|
+| **Akun operator** (username + password) | Membuka dashboard: kelola Cartesia keys, buat client key, ubah rotasi. | bcrypt di SQLite; sesi berupa cookie `HttpOnly` yang hanya menyimpan hash-nya di server. |
+| **Client API key** (`dk_…`) | Memanggil `/v1/*`: sintesis, daftar model, daftar voice, preview. | Hash SHA-256 di SQLite; secret asli hanya ditampilkan sekali saat dibuat. |
+
+**Kunjungan pertama** menampilkan layar login dengan akun default **`admin` / `admin`**. Itu bukan
+akun kerja: setelah masuk, console mengunci diri ke satu layar **Ganti password** dan API menjawab
+`403` sampai password diganti (minimal 12 karakter, tidak boleh sama dengan `admin` atau username).
+Mengganti password mengeluarkan semua sesi, lalu Anda masuk lagi dengan password baru. Akun default
+dibuat otomatis saat database pertama kali dibuka, jadi tidak ada lagi formulir "buat akun".
+
+**Lupa password?** Jalankan satu perintah di host, lalu masuk lagi dengan `admin`/`admin` dan ganti:
+
+```bash
+# Docker
+docker exec cartesia-gw-cartesia-gw-1 /cartesia-gw -db /data/data.sqlite -reset-password
+# binary biasa
+./cartesia-gw -db ~/.cartesia-gw/data.sqlite -reset-password
+```
+
+Perintah itu mengembalikan login ke `admin`/`admin`, menandai wajib-ganti lagi, dan mencabut semua
+sesi. Ia hanya bisa dipakai dari host (bukan lewat HTTP).
+
+Sebelum ada akun sama sekali (mis. `-reset-password` di jalankan pada DB kosong), hanya **loopback**
+yang boleh memanggil `/v1`; begitu akun atau client key pertama ada, semua pemanggil wajib memakai
+kredensial, termasuk dari loopback.
+
+**Client key** dibuat di panel **Client Keys**: beri nama, pilih masa berlaku (atau tanpa batas).
+Secret tampil sekali di kotak hijau — salin saat itu juga. Tersedia **putar** (secret baru, key lama
+langsung mati), **nonaktifkan** (berlaku pada request berikutnya), dan **hapus**. Tabel hanya
+menampilkan prefix (`dk_WbDxVPuIi…`) dan jumlah request.
+
+**Akun & sesi** ada di panel paling bawah: ganti username atau password (password sekarang wajib
+diisi), atau **Keluarkan semua sesi**. Mengganti password **menghapus semua sesi** — termasuk browser
+yang sedang dipakai — lalu Anda masuk lagi. Kebijakan ini dipilih karena satu akun operator, satu
+kebiasaan buruk: kalau password bocor, sesi di perangkat lain tidak boleh ikut bertahan.
+
+**Proteksi di lapisan HTTP:**
+
+- Cookie sesi: `HttpOnly`, `SameSite=Strict`, `Secure` bila request datang via TLS/`X-Forwarded-Proto`
+  dari loopback (yaitu reverse proxy Anda).
+- Setiap penulisan (`POST`/`PATCH`/`DELETE`) lewat cookie wajib membawa header `X-Requested-With:
+  cartesia-gw`. Form di origin lain tidak bisa menambah header ini tanpa preflight CORS yang tidak
+  pernah diberikan — itu pengganti token CSRF.
+- Login dibatasi 10 percobaan gagal per alamat per 15 menit. bcrypt cost 12 (~250 ms) membuat setiap
+  percobaan tetap mahal.
+- `CARTESIA_GW_TOKEN` masih diterima: saat akun atau client key pertama dibuat, nilainya diimpor sekali
+  sebagai client key bernama *imported dari CARTESIA_GW_TOKEN*, jadi skrip yang sudah memakai token lama
+  tetap jalan. Setelah itu token itu boleh dihapus dari `.env`.
+
+**Upgrade dari versi sebelumnya.** Instalasi lama tidak punya akun; build ini membuatnya saat start
+(`admin`/`admin`) dan langsung meminta ganti password. Token `CARTESIA_GW_TOKEN` yang sudah ada
+diimpor sekali sebagai client key, jadi skrip lama tetap jalan.
+
+---
+
+## Traffic map
+
+Panel di atas workspace adalah peta trafik 24 jam: **client keys** di kiri, **Cartesia keys** di
+kanan, gateway di tengah. Satu request ke `GET /api/routing` mengisi semuanya, jadi kedua sisi selalu
+menggambarkan jendela waktu dan keadaan picker yang sama.
+
+- **Ketebalan garis** sebanding dengan porsi request 24 jam key/client itu (dalam akar kuadrat, supaya
+  key kecil tetap terlihat). Garis yang berhenti bergerak berarti key itu sedang cooldown/nonaktif.
+- **Warna titik:** hijau siap, oranye cooldown, abu-abu nonaktif atau client key kedaluwarsa.
+- **Ring "berikutnya"** menandai key yang akan dipilih **berikutnya** oleh strategi aktif. Nilainya
+  dihitung dengan query yang sama seperti `PickKey` (tapi tanpa mencatat pemakaian), jadi ia prediksi
+  yang jujur, bukan taksiran.
+- **Angka per kartu:** request 24 jam, porsi (%), dan untuk key — prioritas bila strategi `priority`.
+  Masuk ke angka prioritas di kartu untuk mengubahnya langsung.
+
+---
+
+## Strategi rotasi
+
+Lima strategi, bisa diganti dari dashboard dan berlaku pada request berikutnya tanpa restart:
+
+| Strategi | Perilaku |
+|---|---|
+| `least-recently-used` | **Default.** Key yang paling lama menganggur dipakai lebih dulu. |
+| `round-robin` | Bergilir menurut id, kembali ke awal. Urutan bisa diprediksi. |
+| `random` | Acak dari key yang tidak sedang cooldown. |
+| `sticky` | Satu key dipakai terus sampai cooldown; key lain menyimpan kuotanya. |
+| `priority` | Angka prioritas terkecil dicoba lebih dulu (0 = paling dulu), LRU di antara nilai yang sama. Ini cara mengekspresikan "primer + cadangan": key prioritas 10 hanya beralih ke 60 saat 10 cooldown atau nonaktif. |
+
+Semua strategi mengabaikan key yang sedang cooldown selama ada key bebas, dan jatuh ke key yang paling
+cepat bebas kalau semuanya diparkir.
+
+---
+
 ## Dashboard
 
-Dua kolom: kontrol di kiri, pustaka voice di kanan. Di layar sempit keduanya bertumpuk.
+Enam halaman terpisah, dipilih dari menu kiri dan tercermin di URL (`#/overview`, `#/synthesize`,
+`#/history`, `#/keys`, `#/clients`, `#/account`). Detail tiap halaman ada di
+[`docs/ui-pages.md`](docs/ui-pages.md). Login mendarat di **Synthesize**.
+
+Halaman **Synthesize** dua kolom: kontrol di kiri, pustaka voice di kanan. Di layar sempit keduanya
+bertumpuk.
 
 **Pustaka voice** — bukan dropdown. Tiap baris punya tombol putar untuk mendengar contoh suara tanpa
 meninggalkan halaman, dan menampilkan lokal aksen (dari `accents[].locale`), gender, serta penanda
@@ -149,10 +248,10 @@ mengunduh adalah pembayaran kedua untuk audio yang sama.
 Preferensi terakhir (model, format, emotion, speed, volume, voice) disimpan di `localStorage`.
 `Ctrl`/`Cmd`+`Enter` di kotak teks langsung men-generate.
 
-Halaman dan asetnya di-embed ke binary: `index.html`, `app.css`, `app.js`, `favicon.svg`. Tanpa
-framework, tanpa langkah build, tanpa aset dari CDN. Ketiga aset dikirim dengan `ETag` dan
-`Cache-Control: no-cache`; halaman shell-nya `no-store`, supaya upgrade binary tidak pernah menyisakan
-JS lama di cache browser.
+Halaman dan asetnya di-embed ke binary: `index.html`, `app.css`, `app.js`, `auth.js`, `routing.js`,
+`clients.js`, `favicon.svg`. Tanpa framework, tanpa langkah build, tanpa aset dari CDN. Aset dikirim
+dengan `ETag` dan `Cache-Control: no-cache`; halaman shell-nya `no-store`, supaya upgrade binary tidak
+pernah menyisakan JS lama di cache browser.
 
 ---
 
@@ -163,12 +262,12 @@ Flag, dengan padanan environment variable:
 | Flag | Env | Default | Keterangan |
 |---|---|---|---|
 | `-addr` | `CARTESIA_GW_ADDR` | `127.0.0.1:20140` | Alamat listen. |
-| `-gateway-token` | `CARTESIA_GW_TOKEN` | — | Token yang harus dibawa klien. **Wajib** kalau `-addr` bukan loopback. |
+| `-gateway-token` | `CARTESIA_GW_TOKEN` | — | Token bersama lama. Masih mengunci `/v1` saat tidak ada client key, mengaktifkan login wajib, dan diimpor sekali sebagai client key pertama. Kalau kosong, autentikasi bergantung pada akun + client key. |
 | `-db` | `CARTESIA_GW_DB` | `~/.cartesia-gw/data.sqlite` | Berkas SQLite. |
 | `-cartesia-version` | `CARTESIA_GW_VERSION_HEADER` | `2026-08-14` | Nilai header `Cartesia-Version`. Cartesia menolak request tanpa header ini. |
 | `-cartesia-base-url` | `CARTESIA_GW_BASE_URL` | `https://api.cartesia.ai` | Untuk mengarahkan ke proxy sendiri. |
 | `-retention-days` | `CARTESIA_GW_RETENTION_DAYS` | `30` | Lama riwayat request disimpan. |
-| `-rotation` | `CARTESIA_GW_ROTATION` | `least-recently-used` | Strategi pemilihan key sebelum dashboard menyimpan satu: `least-recently-used`, `round-robin`, `random`, `sticky`. |
+| `-rotation` | `CARTESIA_GW_ROTATION` | `least-recently-used` | Strategi awal: `least-recently-used`, `round-robin`, `random`, `sticky`, `priority`. |
 | `-cors-origin` | `CARTESIA_GW_CORS_ORIGIN` | — | Satu origin yang diizinkan untuk `/v1/*`. Kosong = CORS mati. |
 | `-request-timeout` | — | `5m` | Batas waktu per sintesis (0 = tanpa batas). |
 | `-log-level` | `CARTESIA_GW_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
@@ -177,19 +276,9 @@ Flag, dengan padanan environment variable:
 
 ## Rotasi key dan cooldown
 
-Strategi pemilihan key bisa diganti dari dashboard (panel **API keys**) dan berlaku pada permintaan
-berikutnya tanpa restart. Empat pilihan:
-
-| Strategi | Perilaku |
-|---|---|
-| `least-recently-used` | **Default.** Key yang paling lama tidak dipakai dipilih lebih dulu. Tetap menyebar rata saat key ditambah atau dihapus, karena tidak menyimpan urutan. |
-| `round-robin` | Bergilir berurutan menurut id, kembali ke key pertama setelah yang terakhir. Urutannya bisa diprediksi. |
-| `random` | Acak dari key yang tidak sedang diparkir. |
-| `sticky` | Satu key dipakai terus sampai kena limit, jadi kuota key lain tetap utuh. |
-
-Semua strategi mengabaikan key yang sedang cooldown selama masih ada key yang bebas. Yang tersimpan
-di database adalah sumber kebenarannya; `-rotation` hanya menentukan nilai awal untuk database yang
-belum pernah diatur dari dashboard.
+Strategi dijelaskan di bagian [Strategi rotasi](#strategi-rotasi). Yang tersimpan di database adalah
+sumber kebenarannya; `-rotation` hanya menentukan nilai awal untuk database yang belum pernah diatur
+dari dashboard.
 
 **Kenapa urutannya disimpan dalam milidetik.** Kolom `last_used_at` berpresisi detik — cukup untuk
 ditampilkan, tidak cukup untuk memilih. Beberapa permintaan yang jatuh dalam detik yang sama akan
@@ -227,12 +316,15 @@ Riwayat dipangkas otomatis: sekali saat start, lalu tiap 6 jam, lebih tua dari `
 
 ## Keamanan
 
-- Default hanya listen di loopback. Bind ke alamat jaringan **tanpa** `-gateway-token` ditolak saat
-  start — dashboard ini menampilkan API key Cartesia Anda.
-- `/v1/*` dan `/api/*` butuh token kalau token diatur. Halaman statisnya tidak membawa rahasia, jadi
-  tetap disajikan; token disimpan di `localStorage` setelah Anda menempelkannya.
-- Secret key hanya dikembalikan oleh `GET /api/keys/{id}/reveal` atas permintaan eksplisit;
-  daftar key selalu bertopeng.
+- Default hanya listen di loopback. Bind ke alamat jaringan **tanpa** kredensial (token atau akun)
+  ditolak saat start — dashboard ini menampilkan API key Cartesia Anda.
+- `/api/*` hanya terbuka lewat **sesi operator** (cookie `HttpOnly`); `/v1/*` hanya lewat **client
+  key**. Client key tidak bisa membuka dashboard, sesi browser tidak bisa dipakai skrip tanpa cookie.
+- Secret Cartesia dikembalikan hanya oleh `GET /api/keys/{id}/reveal` atas permintaan eksplisit;
+  daftar key selalu bertopeng. Secret client key tidak pernah bisa diambil lagi setelah dibuat.
+- Semua secret di database disimpan sebagai hash (client key SHA-256, password bcrypt); sesi
+  disimpan sebagai hash dan bisa dicabut semua sekaligus.
+- Login dibatasi 10 kegagalan per 15 menit per alamat; bcrypt cost 12 membuat tiap percobaan mahal.
 - URL preview voice divalidasi: hanya `https://*.cartesia.ai` yang boleh diambil. URL yang datang
   dari respons pihak ketiga tidak diperlakukan sebagai tepercaya.
 - CORS mati kecuali Anda mengisi `-cors-origin`.
@@ -247,7 +339,22 @@ make test-race
 make vet
 make cross       # 6 target, CGO_ENABLED=0
 make docker
+node scripts/smoke-docker.mjs   # smoke test terhadap instance yang sudah jalan
 ```
+
+Smoke test membaca `BASE` (default `http://127.0.0.1:20999`) dan membuat akun operator sendiri, jadi
+aman dijalankan terhadap container sekali pakai. Contoh untuk image lokal:
+
+```bash
+docker run --rm -d -p 127.0.0.1:20999:20140 \
+  -e CARTESIA_GW_TOKEN=token-sementara-untuk-tes \
+  --name cgw-smoke cartesia-gw:0.1.0
+BASE=http://127.0.0.1:20999 node scripts/smoke-docker.mjs
+docker rm -f cgw-smoke
+```
+
+> Catatan: image yang berjalan di `0.0.0.0` **wajib** punya `CARTESIA_GW_TOKEN` (atau akun yang sudah
+> dibuat) saat start; tanpa keduanya binary menolak listen.
 
 Contoh unit systemd:
 
@@ -303,9 +410,17 @@ make -f Makefile.docker env
 Atau manual: `cp .env.example .env`, isi `CARTESIA_GW_TOKEN` dengan `openssl rand -hex 32`,
 lalu `chmod 600 .env`.
 
-**`CARTESIA_GW_TOKEN` wajib.** Container listen di `0.0.0.0` di dalam jaringannya, dan binary
-menolak bind non-loopback tanpa token — container akan langsung exit dengan pesan jelas. Token
-dipakai klien sebagai `Authorization: Bearer …` dan juga untuk `/api/*` (dashboard).
+**`CARTESIA_GW_TOKEN` wajib saat start.** Container listen di `0.0.0.0` di dalam jaringannya, dan
+binary menolak bind non-loopback tanpa kredensial apa pun — container akan langsung exit dengan pesan
+jelas. Token ini berfungsi ganda:
+
+1. **kunci bootstrap**: saat dashboard pertama kali dibuka, masuk dengan password = token ini untuk
+   membuat akun operator;
+2. **client key pertama**: token diimpor otomatis sebagai client key, jadi skrip yang sudah memakainya
+   tetap jalan setelah Anda mulai membuat key `dk_…`.
+
+Setelah akun dan client key dibuat, token boleh diganti di `.env` (dan container di-recreate); tidak
+ada yang bergantung padanya lagi. Untuk deployment baru tanpa skrip lama, nilai acak apa pun cukup.
 
 ### 2. Jalankan
 
@@ -347,6 +462,9 @@ curl -X POST https://$DOMAIN/v1/audio/speech \
   -d '{"model":"sonic-3","input":"Halo dunia","voice":"<voice-uuid>"}' \
   --output speech.mp3
 ```
+
+Panduan khusus untuk VPS berpaneL **aaPanel** (modul Docker + Nginx/SSL bawaan panel, tanpa
+Caddy) ada di [`docs/deploy-aapanel.md`](docs/deploy-aapanel.md).
 
 Kalau memakai nginx/Traefik yang sudah ada di host, lewati lapisan TLS. Set
 `CARTESIA_GW_BIND=0.0.0.0` **hanya** jika port itu dikunci firewall dari internet

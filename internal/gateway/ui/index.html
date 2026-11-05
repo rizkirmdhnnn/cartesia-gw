@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>cartesia-gw — Relay Editorial Console</title>
+<title>cartesia-gw — operator console</title>
 <link rel="icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bitter:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
 </head>
-<body>
-<div class="app-layout">
+<body class="locked">
+<div class="app-layout" id="appShell">
 
   <!-- Sidebar Navigation -->
   <aside class="app-sidebar" aria-label="Navigasi Utama">
@@ -20,14 +20,24 @@
       <div class="brand">
         <span class="mark"></span>
         <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
-        <span class="brand-pill">Relay</span>
+        <span class="brand-pill">lab</span>
       </div>
     </div>
 
     <nav class="sidebar-nav">
       <div class="nav-group">
-        <span class="nav-eyebrow">Studio Engine</span>
-        <a href="#controlsPanel" class="nav-link active" data-section="controlsPanel">
+        <span class="nav-eyebrow">Ringkasan</span>
+        <a href="#/overview" class="nav-link" data-page="overview">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="5" rx="1"></rect>
+            <rect x="14" y="12" width="7" height="9" rx="1"></rect>
+            <rect x="3" y="16" width="7" height="5" rx="1"></rect>
+          </svg>
+          <span class="nav-label">Overview</span>
+          <span class="nav-badge" id="overviewNavBadge">0</span>
+        </a>
+        <a href="#/synthesize" class="nav-link active" data-page="synthesize">
           <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
             <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
@@ -35,20 +45,11 @@
           </svg>
           <span class="nav-label">Synthesize</span>
         </a>
-        <a href="#libraryPanel" class="nav-link" data-section="libraryPanel">
-          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-            <line x1="12" x2="12" y1="19" y2="22"></line>
-          </svg>
-          <span class="nav-label">Voice Library</span>
-          <span class="nav-badge" id="voiceNavBadge">0</span>
-        </a>
       </div>
 
       <div class="nav-group">
-        <span class="nav-eyebrow">Operations</span>
-        <a href="#usagePanel" class="nav-link" data-section="usagePanel">
+        <span class="nav-eyebrow">Operasional</span>
+        <a href="#/history" class="nav-link" data-page="history">
           <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <polyline points="12 6 12 12 16 14"></polyline>
@@ -56,18 +57,50 @@
           <span class="nav-label">Riwayat</span>
           <span class="nav-badge" id="usageNavBadge">0</span>
         </a>
-        <a href="#keysPanel" class="nav-link" data-section="keysPanel">
+      </div>
+
+      <div class="nav-group">
+        <span class="nav-eyebrow">Kredensial</span>
+        <a href="#/keys" class="nav-link" data-page="keys">
           <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="7.5" cy="15.5" r="5.5"></circle>
             <path d="m21 2-9.6 9.6"></path>
             <path d="m15.5 7.5 3 3L22 7l-3-3"></path>
           </svg>
-          <span class="nav-label">API Keys</span>
+          <span class="nav-label">Cartesia Keys</span>
           <span class="nav-badge" id="keysNavBadge">0</span>
         </a>
+        <a href="#/clients" class="nav-link" data-page="clients">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span class="nav-label">Client Keys</span>
+          <span class="nav-badge" id="clientsNavBadge">0</span>
+        </a>
+      </div>
+
+      <div class="nav-group">
+        <span class="nav-eyebrow">Sesi</span>
+        <a href="#/account" class="nav-link" data-page="account">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="4"></circle>
+            <path d="M4 21v-1a7 7 0 0 1 14 0v1"></path>
+          </svg>
+          <span class="nav-label">Akun &amp; Sesi</span>
+        </a>
+        <button class="nav-link nav-action" id="logoutBtn" type="button">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" x2="9" y1="12" y2="12"></line>
+          </svg>
+          <span class="nav-label">Keluar</span>
+        </button>
       </div>
     </nav>
-
     <div class="sidebar-footer">
       <div class="system-status-card">
         <div class="status-indicator">
@@ -89,60 +122,96 @@
           <span class="mark"></span>
           <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
         </div>
-        <div class="breadcrumb">
-          <span class="breadcrumb-root">Cartesia Gateway</span>
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+          <span class="breadcrumb-root">cartesia-gw</span>
           <span class="breadcrumb-sep">/</span>
-          <span class="breadcrumb-curr">Operational Console</span>
-        </div>
+          <span class="breadcrumb-curr" id="breadcrumbPage">Synthesize</span>
+        </nav>
       </div>
 
       <div class="topbar-center">
         <div class="search-command-bar" id="searchCommandBar">
-          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"></circle>
             <path d="m21 21-4.35-4.35"></path>
           </svg>
-          <input type="text" id="globalCommandInput" class="search-command-input" placeholder="Cari voice, model, atau shortcut…" autocomplete="off">
-          <kbd class="keycap">⌘K</kbd>
+          <input type="text" id="globalCommandInput" class="search-command-input" placeholder="Cari voice…" autocomplete="off" aria-label="Cari voice">
+          <kbd class="keycap">ctrl K</kbd>
         </div>
       </div>
 
       <div class="topbar-right">
         <div class="live-pill">
           <span class="live-pulse"></span>
-          <span>Live Audio Proxy</span>
+          <span>live</span>
         </div>
-        <button class="btn ghost tiny token-toggle-btn" id="tokenToggleBtn" title="Pengaturan Gateway Token">Token</button>
+        <button class="btn ghost tiny" id="logoutTopBtn" title="Keluar dari dashboard">Keluar</button>
       </div>
     </header>
-
-    <!-- Token Banner (Recessed Warning Alert Well) -->
-    <div class="tokenbar" id="tokenBanner" hidden>
-      <div class="tokenbar-msg">
-        <span class="tokenbar-dot"></span>
-        <span class="material">Gateway token required.</span>
-      </div>
-      <input id="tokenInput" type="password" placeholder="tempel nilai -gateway-token" autocomplete="off">
-      <button class="btn primary tiny" id="tokenSave">Simpan</button>
-    </div>
 
     <!-- Workspace -->
     <main class="workspace">
 
-      <!-- Page Title & Editorial Header -->
+      <!-- Page Title & Editorial Header (per page, swapped by the router) -->
       <header class="page-header">
         <div class="page-title-wrap">
-          <span class="category-eyebrow">Cartesia Operational Suite</span>
-          <h1 class="page-title">Voice Synthesis & Key Router</h1>
-          <p class="page-desc">High-concurrency Cartesia speech gateway with automated key rotation, rate-limit cooling, and real-time streaming audio.</p>
+          <h1 class="page-title" id="pageTitle">Voice Synthesis &amp; Key Router</h1>
+          <p class="page-desc" id="pageDesc">High-concurrency Cartesia speech gateway with automated key rotation, rate-limit cooling, and real-time streaming audio.</p>
         </div>
+        <span class="category-eyebrow" id="pageEyebrow" aria-hidden="true"></span>
       </header>
+
+      <!-- Page: Overview. Who is sending, where it lands, and the numbers. -->
+      <section class="page" data-page="overview" aria-label="Overview">
 
       <!-- KPI / Summary Strip (Unified Horizontal Bar) -->
       <section class="kpi-strip-section" aria-label="Metrik Operasional">
         <div class="chips" id="chips"></div>
       </section>
 
+      <!-- Traffic Map: clients -> gateway -> Cartesia keys -->
+      <section class="panel span routing-panel" id="routingPanel" aria-labelledby="routingTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="routingTitle">Aliran trafik</h2>
+          </div>
+          <div class="routing-head-tools">
+            <span class="routing-strategy-pill" id="routingStrategy">—</span>
+            <button class="btn ghost tiny" id="routingRefresh" title="Muat ulang peta">Muat ulang</button>
+          </div>
+        </div>
+        <p class="muted rotation-hint" id="routingCaption"></p>
+
+        <div class="routing-canvas" id="routingCanvas">
+          <div class="plate-label" aria-hidden="true">
+            <span>fig. 01</span><span>aliran trafik · 24 jam</span>
+          </div>
+          <svg class="routing-edges" id="routingEdges" width="100%" height="100%" aria-hidden="true"></svg>
+          <div class="routing-col" id="routingClients"></div>
+          <div class="routing-hub">
+            <div class="hub-orbit"></div>
+            <div class="hub-core">
+              <span class="hub-title">cartesia-gw</span>
+              <span class="hub-sub" id="hubSub">idle</span>
+            </div>
+            <div class="hub-pulse" id="hubPulse"></div>
+          </div>
+          <div class="routing-col routing-col-keys" id="routingKeys"></div>
+        </div>
+        <div class="routing-legend">
+          <span><i class="lg-dot ok"></i>siap</span>
+          <span><i class="lg-dot warn"></i>cooldown</span>
+          <span><i class="lg-dot off"></i>nonaktif</span>
+          <span><i class="lg-line"></i>aliran trafik 24 jam</span>
+          <span><i class="lg-ring"></i>dipilih berikutnya</span>
+        </div>
+      </section>
+
+      </section>
+
+
+      <!-- Page: Synthesize. Controls on the left, voice library on the right. -->
+      <section class="page" data-page="synthesize" aria-label="Synthesize">
       <!-- Two-Column Studio Grid -->
       <div class="workspace-grid">
 
@@ -272,13 +341,16 @@
         </section>
 
       </div>
+      </section>
 
+      <!-- Page: Riwayat (usage history) -->
+      <section class="page" data-page="history" aria-label="Riwayat">
       <!-- Riwayat (Usage History) Panel -->
       <section class="panel span" id="usagePanel" aria-labelledby="usageTitle">
         <div class="panel-head">
           <div>
             <span class="category-eyebrow">Audit & Traffic Log</span>
-            <h2 id="usageTitle">Riwayat</h2>
+            <h2 id="usageTitle">Log request</h2>
           </div>
           <span class="muted" id="pageInfo"></span>
         </div>
@@ -288,13 +360,16 @@
           <button class="btn ghost tiny" id="pageOlder">lebih lama →</button>
         </div>
       </section>
+      </section>
 
-      <!-- API Keys Panel -->
+      <!-- Page: Cartesia keys (upstream credentials) -->
+      <section class="page" data-page="keys" aria-label="Cartesia keys">
+      <!-- Cartesia Keys Panel: upstream credentials the gateway rotates -->
       <section class="panel span" id="keysPanel" aria-labelledby="keysTitle">
         <div class="panel-head">
           <div>
-            <span class="category-eyebrow">Credential Router</span>
-            <h2 id="keysTitle">API keys</h2>
+            <span class="category-eyebrow">Upstream Credentials</span>
+            <h2 id="keysTitle">Kunci upstream</h2>
           </div>
           <div class="rotation">
             <label for="rotation">Rotasi key</label>
@@ -316,6 +391,86 @@
         </div>
         <div id="keysTable"></div>
       </section>
+      </section>
+
+      <!-- Page: Client keys (credentials clients must send) -->
+      <section class="page" data-page="clients" aria-label="Client keys">
+      <!-- Client Keys Panel: credentials your clients must send -->
+      <section class="panel span" id="clientsPanel" aria-labelledby="clientsTitle">
+        <div class="panel-head">
+          <div>
+            <span class="category-eyebrow">Client Access</span>
+            <h2 id="clientsTitle">Kunci klien</h2>
+          </div>
+          <span class="muted" id="clientsMeta">—</span>
+        </div>
+        <p class="muted rotation-hint">Setiap klien memanggil <code>/v1/*</code> dengan
+          <code>Authorization: Bearer dk_…</code>. Secret hanya ditampilkan sekali saat dibuat.
+          Key yang dinonaktifkan berhenti bekerja pada request berikutnya.</p>
+
+        <div class="row add-key">
+          <div class="field">
+            <label for="clientLabel">Nama klien</label>
+            <input id="clientLabel" placeholder="mis. n8n-produksi" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="clientExpiry">Kedaluwarsa</label>
+            <select id="clientExpiry">
+              <option value="">tanpa batas</option>
+              <option value="1">1 hari</option>
+              <option value="7">7 hari</option>
+              <option value="30">30 hari</option>
+              <option value="90">90 hari</option>
+              <option value="365">1 tahun</option>
+            </select>
+          </div>
+          <button class="btn primary" id="clientAdd">Buat key</button>
+        </div>
+
+        <div id="newClientSecret" class="secret-reveal" hidden>
+          <span class="category-eyebrow">Salin sekarang — tidak akan ditampilkan lagi</span>
+          <div class="row">
+            <code class="secret-code" id="newClientSecretValue"></code>
+            <button class="btn ghost tiny" id="newClientCopy">Salin</button>
+          </div>
+        </div>
+
+        <div id="clientsTable"></div>
+      </section>
+      </section>
+
+      <!-- Page: Account & sessions -->
+      <section class="page" data-page="account" aria-label="Akun dan sesi">
+      <!-- Account Panel -->
+      <section class="panel span" id="accountPanel" aria-labelledby="accountTitle">
+        <div class="panel-head">
+          <div>
+            <span class="category-eyebrow">Operator Account</span>
+            <h2 id="accountTitle">Kredensial operator</h2>
+          </div>
+        </div>
+        <div class="account-grid">
+          <div class="field">
+            <label for="accountUsername">Username</label>
+            <input id="accountUsername" autocomplete="username" maxlength="64">
+          </div>
+          <div class="field">
+            <label for="accountCurrent">Password sekarang</label>
+            <input id="accountCurrent" type="password" autocomplete="current-password">
+          </div>
+          <div class="field">
+            <label for="accountNew">Password baru</label>
+            <input id="accountNew" type="password" autocomplete="new-password">
+          </div>
+          <div class="account-actions">
+            <button class="btn primary" id="accountSave">Simpan akun</button>
+            <button class="btn ghost" id="accountLogoutAll">Keluarkan semua sesi</button>
+          </div>
+        </div>
+        <p class="muted">Mengubah password atau mengeluarkan semua sesi akan mematikan sesi login lain
+          serta browser ini.</p>
+      </section>
+      </section>
 
     </main>
 
@@ -323,7 +478,64 @@
 
 </div>
 
+<!-- Login gate: the console stays hidden until a session exists -->
+<div class="login-gate" id="loginGate">
+  <div class="gate-bar" aria-hidden="true"></div>
+  <form class="login-card" id="loginForm" method="post" action="/auth/login" novalidate autocomplete="on">
+    <div class="login-brand">
+      <span class="mark"></span>
+      <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
+      <span class="brand-pill">lab</span>
+    </div>
+    <h1 class="login-title">Masuk ke console</h1>
+    <p class="login-desc" id="loginDesc">Sesi operator diperlukan untuk membuka dashboard.</p>
+
+    <label class="login-field" for="loginUser">Username</label>
+    <input id="loginUser" name="username" autocomplete="username" required maxlength="64">
+
+    <label class="login-field" for="loginPass">Password</label>
+    <input id="loginPass" name="password" type="password" autocomplete="current-password" required>
+
+    <div class="login-field login-double" id="loginConfirmWrap" hidden>
+      <label for="loginConfirm">Ulangi password (minimal 12 karakter)</label>
+      <input id="loginConfirm" type="password" autocomplete="new-password">
+    </div>
+
+    <p class="login-error" id="loginError" role="alert" hidden></p>
+    <button class="btn primary login-submit" id="loginSubmit" type="submit">Masuk</button>
+    <p class="login-foot muted">Instalasi baru memakai <code>admin</code> / <code>admin</code>,
+      dan password itu wajib diganti sebelum console bisa dipakai.</p>
+  </form>
+  <form class="login-card" id="forcePanel" method="post" action="/api/account" novalidate autocomplete="on" hidden>
+    <div class="login-brand">
+      <span class="mark"></span>
+      <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
+      <span class="brand-pill">lab</span>
+    </div>
+    <h1 class="login-title">Ganti password dulu</h1>
+    <p class="login-desc">Akun ini masih memakai password default <code>admin</code>. Console dan API
+      tetap terkunci sampai Anda menggantinya. Mengganti password mengeluarkan semua sesi, termasuk
+      sesi ini.</p>
+
+    <label class="login-field" for="forceCurrent">Password sekarang (default: admin)</label>
+    <input id="forceCurrent" name="currentPassword" type="password" autocomplete="current-password" required>
+
+    <label class="login-field" for="forceNew">Password baru (minimal 12 karakter)</label>
+    <input id="forceNew" name="newPassword" type="password" autocomplete="new-password" required>
+
+    <label class="login-field" for="forceConfirm">Ulangi password baru</label>
+    <input id="forceConfirm" type="password" autocomplete="new-password" required>
+
+    <p class="login-error" id="forceError" role="alert" hidden></p>
+    <button class="btn primary login-submit" id="forceSubmit" type="submit">Simpan &amp; masuk lagi</button>
+  </form>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="/app.js" type="module"></script>
+<script src="/auth.js"></script>
+<script src="/router.js"></script>
+<script src="/routing.js"></script>
+<script src="/clients.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>

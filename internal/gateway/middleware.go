@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -100,44 +99,14 @@ func (s *Server) logMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware requires the gateway token on everything that reads or writes
-// state: the /v1 API and the dashboard's own /api routes. The static page
-// itself carries no secret, so it is served regardless — the page then asks
-// for the token and stores it locally.
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.GatewayToken == "" || !protectedPath(r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(presentedToken(r)), []byte(s.cfg.GatewayToken)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="cartesia-gw"`)
-			writeError(w, http.StatusUnauthorized, "missing or invalid gateway token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func protectedPath(path string) bool {
-	return strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/api/")
-}
-
-// presentedToken reads the credential from the Authorization header, falling
-// back to X-Gateway-Token so a browser fetch does not need a custom header
-// dance for a preflight it would otherwise trigger.
-func presentedToken(r *http.Request) string {
-	if header := r.Header.Get("Authorization"); header != "" {
-		if token, ok := strings.CutPrefix(header, "Bearer "); ok {
-			return strings.TrimSpace(token)
-		}
-	}
-	return strings.TrimSpace(r.Header.Get("X-Gateway-Token"))
-}
+// authMiddleware lives in auth.go: the gate is split between session cookies
+// (dashboard) and client keys (API), so it no longer fits in one function here.
 
 // corsMiddleware answers preflight and tags /v1 responses when an origin is
 // allow-listed. Off by default: adding CORS to a keyholder API without being
 // asked is how a gateway becomes usable from any page the operator visits.
+// Preflight must succeed without credentials — the real request still has to
+// present them.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.CORSOrigin == "" || !strings.HasPrefix(r.URL.Path, "/v1/") {

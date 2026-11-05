@@ -29,6 +29,13 @@ LABEL org.opencontainers.image.title="cartesia-gw" \
 
 COPY --from=build /out/cartesia-gw /cartesia-gw
 
+# /data must exist before the VOLUME declaration and already belong to the
+# nonroot user (65532). Without this line Docker creates the volume directory
+# as root:root on first use, and the process cannot create data.sqlite — the
+# failure mode is "ping sqlite /data/data.sqlite: unable to open database file
+# (14)" followed by a restart loop.
+COPY --from=build --chown=nonroot:nonroot /out /data
+
 # Listen on every interface inside the container. config.validate refuses a
 # non-loopback bind without a gateway token, so CARTESIA_GW_TOKEN is required
 # at runtime; compose reads it from .env.

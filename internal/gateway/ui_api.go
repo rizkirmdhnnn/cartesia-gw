@@ -18,19 +18,23 @@ const (
 	maxTestBody        = 64 << 10
 )
 
-// keyView is a key as the dashboard sees it: the secret is masked unless the
-// operator explicitly reveals it.
+// KeyView is one Cartesia key plus the numbers the visualiser and the table
+// both show.
 type keyView struct {
-	ID            int64  `json:"id"`
-	Label         string `json:"label"`
-	MaskedSecret  string `json:"maskedSecret"`
-	IsActive      bool   `json:"isActive"`
-	Strikes       int    `json:"strikes"`
-	CooldownUntil int64  `json:"cooldownUntil"`
-	Cooling       bool   `json:"cooling"`
-	LastError     string `json:"lastError"`
-	LastUsedAt    int64  `json:"lastUsedAt"`
-	CreatedAt     int64  `json:"createdAt"`
+	ID            int64   `json:"id"`
+	Label         string  `json:"label"`
+	MaskedSecret  string  `json:"maskedSecret"`
+	IsActive      bool    `json:"isActive"`
+	Priority      int     `json:"priority"`
+	Strikes       int     `json:"strikes"`
+	CooldownUntil int64   `json:"cooldownUntil"`
+	Cooling       bool    `json:"cooling"`
+	LastError     string  `json:"lastError"`
+	LastUsedAt    int64   `json:"lastUsedAt"`
+	CreatedAt     int64   `json:"createdAt"`
+	Requests24h   int64   `json:"requests24h"`
+	Share         float64 `json:"share"`
+	Eligible      bool    `json:"eligible"`
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -53,11 +57,19 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientStats, err := s.store.CountClientKeys(r.Context())
+	if err != nil {
+		s.logError("overview: count clients", err)
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":         s.cfg.Version,
 		"cartesiaVersion": s.cfg.CartesiaVersion,
 		"retentionDays":   int(s.cfg.Retention.Hours() / 24),
 		"keys":            keys,
+		"clients":         clientStats,
 		"usage":           usage,
 		"models":          cartesia.Models,
 		"defaultModel":    cartesia.DefaultModel,
@@ -86,15 +98,16 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]keyView, 0, len(keys))
 	for _, key := range keys {
-		views = append(views, toKeyView(key))
+		views = append(views, toKeyView(key, time.Now()))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": views})
 }
 
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Label  string `json:"label"`
-		Secret string `json:"secret"`
+		Label    string `json:"label"`
+		Secret   string `json:"secret"`
+		Priority *int   `json:"priority"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxTestBody)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -105,7 +118,14 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, toKeyView(key))
+	if body.Priority != nil {
+		if err := s.store.SetKeyPriority(r.Context(), key.ID, *body.Priority); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		key, _ = s.store.GetKey(r.Context(), key.ID)
+	}
+	writeJSON(w, http.StatusCreated, toKeyView(key, time.Now()))
 }
 
 func (s *Server) handlePatchKey(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +135,7 @@ func (s *Server) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		IsActive *bool `json:"isActive"`
+		Priority *int  `json:"priority"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxTestBody)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -127,12 +148,18 @@ func (s *Server) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.Priority != nil {
+		if err := s.store.SetKeyPriority(r.Context(), id, *body.Priority); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	key, err := s.store.GetKey(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toKeyView(key))
+	writeJSON(w, http.StatusOK, toKeyView(key, time.Now()))
 }
 
 func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +190,7 @@ func (s *Server) handleResetKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toKeyView(key))
+	writeJSON(w, http.StatusOK, toKeyView(key, time.Now()))
 }
 
 // handleRevealKey hands back the full secret on an explicit request, so the
@@ -256,18 +283,20 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 	s.synthesize(w, r, translation, false)
 }
 
-func toKeyView(key store.Key) keyView {
+func toKeyView(key store.Key, now time.Time) keyView {
 	return keyView{
 		ID:            key.ID,
 		Label:         key.Label,
 		MaskedSecret:  maskSecret(key.Secret),
 		IsActive:      key.IsActive,
+		Priority:      key.Priority,
 		Strikes:       key.Strikes,
 		CooldownUntil: key.CooldownUntil,
-		Cooling:       key.Cooling(time.Now()),
+		Cooling:       key.Cooling(now),
 		LastError:     key.LastError,
 		LastUsedAt:    key.LastUsedAt,
 		CreatedAt:     key.CreatedAt,
+		Eligible:      key.Eligible(now),
 	}
 }
 

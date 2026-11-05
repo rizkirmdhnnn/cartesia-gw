@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,10 @@ import (
 // version is overridden at build time with -ldflags.
 var version = "dev"
 
+// resetPassword is a one-shot admin action, not part of the normal flag set:
+// it runs before the server starts, then exits.
+var resetPassword bool
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("startup failed", "error", err)
@@ -31,6 +36,10 @@ func main() {
 }
 
 func run() error {
+	// The reset flag is parsed here rather than in config.Load because it is a
+	// CLI-only action: it needs the -db path but none of the HTTP settings.
+	flag.BoolVar(&resetPassword, "reset-password", false,
+		"reset the dashboard login to "+store.DefaultUsername+"/"+store.DefaultPassword+" (forces a change on next login) and exit")
 	cfg, err := config.Load(version)
 	if err != nil {
 		return err
@@ -46,6 +55,24 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if resetPassword {
+		account, err := st.ResetToDefaultPassword(ctx)
+		if err != nil {
+			return err
+		}
+		logger.Warn("dashboard login reset to the default; change it on next sign-in",
+			"db", cfg.DBPath, "username", account.Username)
+		return nil
+	}
+
+	// A fresh database gets the default operator so the first page is a login.
+	if created, err := st.EnsureDefaultAccount(ctx); err != nil {
+		return err
+	} else if created {
+		logger.Warn("created the default dashboard account; it must be changed on first sign-in",
+			"username", store.DefaultUsername)
+	}
 
 	go pruneLoop(ctx, st, cfg, logger)
 
