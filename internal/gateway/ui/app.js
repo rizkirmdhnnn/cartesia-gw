@@ -5,10 +5,8 @@
 
 const $ = (id) => document.getElementById(id);
 
-const TOKEN_KEY = 'cartesia-gw-token';
 const PREFS_KEY = 'cartesia-gw-prefs';
 
-let token = localStorage.getItem(TOKEN_KEY) || '';
 let overview = null;
 let audio = null;              // the generated clip, for download without re-billing
 let streamCtl = null;          // AbortController for an in-flight generation
@@ -37,6 +35,10 @@ const ROTATIONS = {
   'sticky': {
     label: 'Sticky',
     hint: 'Satu key dipakai terus sampai kena limit, jadi kuota key lain tetap utuh.',
+  },
+  'priority': {
+    label: 'Priority',
+    hint: 'Key dengan prioritas terkecil dicoba lebih dulu. Isi angka prioritas di kartu key pada Traffic map — key berikutnya hanya terpakai saat yang utama cooldown atau nonaktif.',
   },
 };
 
@@ -100,39 +102,40 @@ function renderSparkBars(latencyMs, isOk) {
 }
 
 /* ── transport ───────────────────────────────────────────────────────────── */
+// Every /api call rides the session cookie (credentials included for the same
+// origin) and carries the CSRF marker. On 401 the session is gone, so the gate
+// is shown again rather than a token prompt.
 async function api(path, options) {
-  const opts = { ...(options || {}), headers: { ...(options?.headers || {}) } };
-  if (token) {
-    opts.headers['Authorization'] = 'Bearer ' + token;
-    opts.headers['X-Gateway-Token'] = token;
-  }
+  const opts = { ...(options || {}), headers: { ...(options?.headers || {}) }, credentials: 'same-origin' };
+  opts.headers[CSRF_HEADER] = CSRF_VALUE;
   if (opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json';
   const res = await fetch(path, opts);
   if (res.status === 401) {
-    $('tokenBanner').hidden = false;
-    throw new Error('gateway token required');
+    showLogin('sesi berakhir — silakan masuk lagi');
+    throw new Error('sesi berakhir');
   }
   return res;
 }
 
-async function apiJSON(path, options) {
+async function apiJSON(path, options, wantStatus) {
   const res = await api(path, options);
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { /* not json */ }
   if (!res.ok) throw new Error(body?.error?.message || text || `HTTP ${res.status}`);
+  if (wantStatus && res.status !== wantStatus) throw new Error(`HTTP ${res.status}`);
   return body;
 }
 
 /* ── 4.D KPI / Summary Strip & Overview ──────────────────────────────────── */
-function chip(label, value, iconSvg, deltaPill) {
-  return `<div class="chip kpi-item">
-    <div class="kpi-icon">${iconSvg || ICONS.pulse}</div>
-    <div class="kpi-content">
-      <span class="kpi-value">${escapeHTML(value)}</span>
-      <span class="kpi-label">${escapeHTML(label)}</span>
-    </div>
-    ${deltaPill ? `<span class="kpi-delta">${escapeHTML(deltaPill)}</span>` : ''}
+// chip is one cell of the KPI ledger: a label, a value, and an optional state
+// word. "hot" marks the cell the operator should read first (requests in
+// flight); it earns the lime highlight, nothing else does.
+function chip(label, value, state, hot) {
+  return `<div class="chip${hot ? ' hot' : ''}">
+    <span class="chip-label">${escapeHTML(label)}</span>
+    <b>${escapeHTML(value)}</b>
+    ${state ? `<span class="chip-label">${escapeHTML(state)}</span>` : ''}
   </div>`;
 }
 
@@ -142,13 +145,13 @@ function renderOverview() {
   const rate = u.requests24h ? Math.round((u.success24h / u.requests24h) * 100) : null;
   
   $('chips').innerHTML = [
-    chip('keys', `${k.active || 0}/${k.total || 0}`, ICONS.key, k.active > 0 ? 'online' : null),
-    k.cooling ? chip('cooldown', k.cooling, ICONS.warn, 'parked') : '',
-    chip('24 jam', `${u.requests24h || 0} req`, ICONS.pulse),
-    rate === null ? '' : chip('sukses', rate + '%', ICONS.check, rate >= 95 ? '+optimal' : null),
-    chip('karakter', (u.charsToday || 0).toLocaleString(), ICONS.text),
-    chip('latensi', (u.avgLatencyMs24h || 0) + ' ms', ICONS.speed),
-    chip('versi', overview.version, ICONS.version),
+    chip('24 jam', `${u.requests24h || 0}`, 'req', true),
+    rate === null ? chip('sukses', '—', '') : chip('sukses', `${rate}%`, rate >= 95 ? 'optimal' : 'perlu cek'),
+    chip('karakter', (u.charsToday || 0).toLocaleString(), 'disintesis'),
+    chip('latensi', `${u.avgLatencyMs24h || 0} ms`, 'rata-rata'),
+    chip('keys', `${k.active || 0}/${k.total || 0}`, k.cooling ? `${k.cooling} cooldown` : 'aktif'),
+    chip('client', `${overview.clients?.active ?? 0}`, 'key aktif'),
+    chip('versi', overview.version, 'build'),
   ].join('');
 
   // Update sidebar counter badge
@@ -268,6 +271,10 @@ function renderVoices() {
         <button class="play-btn" data-play="${escapeHTML(v.id)}" title="Putar contoh${desc ? ' — ' + escapeHTML(desc) : ''}">▶</button>
         <span class="vc-text">
           <span class="vc-name">${escapeHTML(v.name || v.id)}</span>
+          <span class="vc-id" title="Voice ID Cartesia">
+            <code>${escapeHTML(v.id)}</code>
+            <button class="vc-copy" type="button" data-copy="${escapeHTML(v.id)}" title="Salin voice ID">salin</button>
+          </span>
           <span class="vc-meta">${tags}</span>
           ${desc ? `<span class="vc-desc">${escapeHTML(desc)}</span>` : ''}
         </span>
@@ -319,11 +326,27 @@ function selectVoice(voice) {
   updateCurl();
 }
 
+// copyVoiceID puts the id on the clipboard. The click is handled before the
+// card's selection so copying never changes the selected voice.
+async function copyVoiceID(id, button) {
+  try {
+    await navigator.clipboard.writeText(id);
+    toast('voice ID disalin: ' + id);
+  } catch {
+    toast('salin manual: ' + id, true);
+  }
+  if (button) {
+    const label = button.textContent;
+    button.textContent = 'tersalin';
+    setTimeout(() => { button.textContent = label; }, 1400);
+  }
+}
+
 function renderSelectedVoice() {
   const v = voiceState.selected;
   $('voiceName').textContent = v ? (v.name || v.id) : 'belum dipilih';
   $('voiceMeta').textContent = v
-    ? [shortID(v.id), voiceLocale(v), v.gender].filter(Boolean).join(' · ')
+    ? [v.id, voiceLocale(v), v.gender].filter(Boolean).join(' · ')
     : 'pilih dari pustaka di sebelah, lalu klik Generate';
   $('voicePlaySelected').disabled = !v;
   $('speak').disabled = !v;
@@ -454,6 +477,12 @@ async function generateStreaming(body, controller, status) {
       if (!value?.byteLength) continue;
       chunks.push(value);
       bytes += value.byteLength;
+      // The meter moves only on real bytes received: a declared total when the
+      // upstream sends one, otherwise a slow asymptote so it never claims done
+      // while audio is still arriving.
+      const declared = Number(res.headers.get('X-Audio-Bytes') || 0);
+      const ratio = declared ? Math.min(bytes / declared, 1) : Math.min(bytes / 400000, 1);
+      $('streamFill').style.transform = `scaleX(${ratio.toFixed(3)})`;
       status.textContent = `mengalir… ${fmtBytes(bytes)}`;
       await appendChunk(source, value);
       if (!playing) {
@@ -522,7 +551,11 @@ function setBusy(busy) {
   $('stop').disabled = !busy;
   $('speak').textContent = busy ? 'Generating…' : 'Generate';
   const meter = $('streamMeter');
-  if (meter) meter.hidden = !busy;
+  if (meter) {
+    meter.hidden = !busy;
+    // Each run starts empty; the fill advances as audio chunks arrive.
+    $('streamFill').style.transform = 'scaleX(0)';
+  }
 }
 
 function download() {
@@ -549,7 +582,7 @@ function updateCurl() {
   const origin = location.origin;
   $('curl').textContent =
     `curl -X POST ${origin}/v1/audio/speech \\\n`
-    + `  -H "Authorization: Bearer $GATEWAY_TOKEN" \\\n`
+    + `  -H "Authorization: Bearer $CLIENT_API_KEY" \\\n`
     + `  -H "Content-Type: application/json" \\\n`
     + `  -d '${JSON.stringify(body)}' \\\n`
     + `  --output speech.${$('format').value === 'pcm' ? 'pcm' : $('format').value}`;
@@ -611,6 +644,7 @@ async function loadRequests() {
 
 function refreshUsage() {
   Promise.all([loadOverview(), loadRequests()]).catch(() => { /* the table can wait */ });
+  loadKeys().catch(() => { /* the badge can wait */ });
 }
 
 /* ── 4.E API Keys Table with Leading Entity Badges ───────────────────────── */
@@ -740,6 +774,8 @@ function wire() {
     if (voiceState.selected) playPreview(voiceState.selected.id);
   });
   $('voiceList').addEventListener('click', (e) => {
+    const copy = e.target.closest('[data-copy]');
+    if (copy) { e.stopPropagation(); copyVoiceID(copy.dataset.copy, copy); return; }
     const play = e.target.closest('[data-play]');
     if (play) { e.stopPropagation(); playPreview(play.dataset.play); return; }
     const card = e.target.closest('.voice-card');
@@ -773,28 +809,65 @@ function wire() {
     if (button) keyAction(button);
   });
 
-  $('tokenSave').addEventListener('click', () => {
-    token = $('tokenInput').value.trim();
-    if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY);
-    $('tokenBanner').hidden = true;
-    refresh();
+  // Client keys, account and the traffic map.
+  $('clientAdd').addEventListener('click', addClient);
+  $('clientLabel').addEventListener('keydown', (e) => { if (e.key === 'Enter') addClient(); });
+  $('clientsTable').addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-cact]');
+    if (button) clientAction(button);
+  });
+  $('newClientCopy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('newClientSecretValue').textContent);
+      toast('secret disalin');
+    } catch {
+      toast('salin manual: ' + $('newClientSecretValue').textContent, true);
+    }
+  });
+  $('accountSave').addEventListener('click', saveAccount);
+  $('accountLogoutAll').addEventListener('click', logoutAll);
+  $('logoutBtn').addEventListener('click', logout);
+  $('logoutTopBtn').addEventListener('click', logout);
+  $('routingRefresh').addEventListener('click', () => { loadRouting(); refreshUsage(); });
+  $('routingKeys').addEventListener('change', (e) => {
+    const input = e.target.closest('input[data-priority-for]');
+    if (input) changeKeyPriority(input.dataset.priorityFor, input.value);
+  });
+  window.addEventListener('resize', queueRoutingLayout);
+  // Login gate.
+  $('loginForm').addEventListener('submit', submitLogin);
+  $('forcePanel').addEventListener('submit', submitForcePassword);
+  $('forceCurrent').addEventListener('keydown', () => { $('forceError').hidden = true; });
+  // A stray Enter inside the gate must never navigate: without JS the form
+  // would send the password in the query string.
+  document.querySelectorAll('#loginForm input').forEach((input) => {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); submitLogin(event); }
+    });
+  });
+  document.querySelectorAll('#forcePanel input').forEach((input) => {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); submitForcePassword(event); }
+    });
   });
 
-  // Header token toggle button
-  const tokenToggle = $('tokenToggleBtn');
-  if (tokenToggle) {
-    tokenToggle.addEventListener('click', () => {
-      const banner = $('tokenBanner');
-      banner.hidden = !banner.hidden;
-      if (!banner.hidden) $('tokenInput').focus();
-    });
-  }
+  // One listener for the script files, so load order cannot silently break it.
+  window.addEventListener('error', (event) => {
+    const message = event.message || 'kesalahan skrip';
+    toast(message, true);
+    if (document.body.classList.contains('locked')) showLogin(message);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const message = (event.reason && event.reason.message) || 'kesalahan tak tertangani';
+    toast(message, true);
+  });
 
-  // Header quick command input (⌘K)
+  // Header quick command input (⌘K): jumps to Synthesize and filters there.
   const globalCmd = $('globalCommandInput');
   if (globalCmd) {
     globalCmd.addEventListener('input', (e) => {
       $('voiceSearch').value = e.target.value;
+      if (currentPage !== 'synthesize') location.hash = '#/synthesize';
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => loadVoices(true), 320);
     });
@@ -807,37 +880,89 @@ function wire() {
     }
   });
 
-  // Sidebar navigation smooth scrolling & active state
-  document.querySelectorAll('.sidebar-nav .nav-link').forEach((link) => {
-    link.addEventListener('click', (e) => {
-      const targetId = link.getAttribute('data-section');
-      const targetEl = $(targetId);
-      if (targetEl) {
-        e.preventDefault();
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        document.querySelectorAll('.sidebar-nav .nav-link').forEach((l) => l.classList.remove('active'));
-        link.classList.add('active');
-      }
-    });
-  });
+  wireRouter();
 }
 
-async function refresh() {
-  try {
-    await Promise.all([loadOverview(), loadKeys(), loadRequests()]);
-  } catch (err) {
-    if (!$('tokenBanner').hidden) return;
-    toast(err.message, true);
+// refreshAll is what the boot path and the 30s ticker use: the small numeric
+// data every page shows in a badge, without the heavy per-page panels.
+async function refreshAll() {
+  const jobs = [loadOverview(), loadRequests(), loadKeys(), loadRouting(), loadClients()];
+  const results = await Promise.allSettled(jobs);
+  for (const result of results) {
+    if (result.status === 'rejected') toast(result.reason.message, true);
   }
 }
 
 async function boot() {
+  let state = null;
+  try {
+    state = await fetchAuthState();
+  } catch (err) {
+    showLogin('gateway tidak dapat dihubungi: ' + err.message);
+    return;
+  }
+
+  // No account yet: the gate offers setup instead of a sign-in form, and the
+  // console stays hidden until that succeeds.
+  if (!state.configured) {
+    showLogin('');
+    return;
+  }
+
+  // A default password has exactly one way forward.
+  if (state.mustChangePassword && state.session) {
+    showForcePassword(state.notify || '');
+    return;
+  }
+
+  // With an account, the session is the only door. Probe before rendering so
+  // the console never flashes for a request that is about to be refused.
+  const probe = await fetch('/api/overview', {
+    headers: { [CSRF_HEADER]: CSRF_VALUE },
+    credentials: 'same-origin',
+  }).catch(() => null);
+  if (!probe || probe.status === 401) {
+    // Explain the gate rather than just showing it: after a password change
+    // the session is over by design.
+    const notice = takePasswordChangedNotice() || state.notify;
+    const isSuccess = Boolean(notice && !state.notify);
+    const message = notice || (probe ? '' : 'gateway tidak dapat dihubungi');
+    showLogin(message);
+    // A successful change is good news; anything else (wrong password from a
+    // native submission) is rendered as a warning by showLogin already.
+    if (isSuccess) $('loginError').classList.add('ok');
+    return;
+  }
+  showApp();
   wire();
   updateTextStats();
   renderSelectedVoice();
-  await refresh();
-  await loadVoices(true);
-  setInterval(() => { if (!document.hidden) refreshUsage(); }, 30000);
+  await refreshAll();
+
+  // The probe passed, but a panel can still be refused if the session vanished
+  // between the two requests. Route that to the login screen (with a message)
+  // instead of leaving an empty dashboard behind.
+  if (!(await sessionStillValid())) {
+    showLogin('sesi tidak ditemukan — silakan masuk lagi');
+    return;
+  }
+  showPage(pageFromHash());
+  setInterval(() => {
+    if (document.hidden) return;
+    refreshUsage();
+    loadRouting();
+  }, 30000);
+}
+
+// sessionStillValid asks the server whether this browser's cookie still works.
+// It sends the CSRF marker but no credentials of its own: the cookie is
+// HttpOnly and travels automatically.
+async function sessionStillValid() {
+  const res = await fetch('/api/overview', {
+    headers: { [CSRF_HEADER]: CSRF_VALUE },
+    credentials: 'same-origin',
+  }).catch(() => null);
+  return Boolean(res && res.ok);
 }
 
 boot();

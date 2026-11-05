@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,13 +9,90 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/store"
 )
 
-// apiGet fetches a dashboard API path and decodes it, without a gateway token
-// (the fixtures for these tests do not configure one).
+// dashboardClient is an http.Client carrying a real operator session cookie.
+// The API is session-only now, so every dashboard test signs in once through
+// the same endpoint a browser uses, and writes carry the CSRF marker.
+type dashboardClient struct{ *http.Client }
+
+func (c dashboardClient) Do(req *http.Request) (*http.Response, error) {
+	req.Header.Set(csrfHeader, csrfValue)
+	return c.Client.Do(req)
+}
+
+func (c dashboardClient) Get(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
+}
+
+func (c dashboardClient) Post(url, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	return c.Do(req)
+}
+
+const (
+	testUsername = "operator"
+	testPassword = "correct-horse-battery"
+)
+
+// signIn creates the operator account (first call) and returns a client whose
+// transport attaches the session cookie.
+func signIn(t *testing.T, st *store.Store) dashboardClient {
+	t.Helper()
+	if _, err := st.CreateAccount(context.Background(), testUsername, testPassword); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+	token, _, err := st.CreateSession(context.Background(), "test", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		req = req.Clone(req.Context())
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		return http.DefaultTransport.RoundTrip(req)
+	})}
+	return dashboardClient{client}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// apiGet fetches a dashboard API path and decodes it.
 func apiGet(t *testing.T, server *httptest.Server, path string) (map[string]any, error) {
 	t.Helper()
 	resp, err := http.Get(server.URL + path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// apiGetAs fetches with the operator session. The CSRF marker rides along,
+// because a real dashboard fetch sends it even on reads.
+func apiGetAs(t *testing.T, client *http.Client, server *httptest.Server, path string) (map[string]any, error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(csrfHeader, csrfValue)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +121,9 @@ func TestDashboardAssetsAreServed(t *testing.T) {
 		{path: "/", contentType: "text/html; charset=utf-8", mustContain: "voiceList"},
 		{path: "/app.css", contentType: "text/css; charset=utf-8", mustContain: ".voice-card", etag: true},
 		{path: "/app.js", contentType: "text/javascript; charset=utf-8", mustContain: "MediaSource", etag: true},
+		{path: "/auth.js", contentType: "text/javascript; charset=utf-8", mustContain: "/auth/login", etag: true},
+		{path: "/routing.js", contentType: "text/javascript; charset=utf-8", mustContain: "/api/routing", etag: true},
+		{path: "/clients.js", contentType: "text/javascript; charset=utf-8", mustContain: "/api/clients", etag: true},
 		{path: "/favicon.ico", contentType: "image/svg+xml", mustContain: "<svg", etag: true},
 	}
 
@@ -111,9 +192,10 @@ func TestOverviewPublishesTheControlBounds(t *testing.T) {
 	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
 		return http.StatusOK, "", nil
 	}}
-	_, _, server := newServer(t, upstream, "")
+	_, st, server := newServer(t, upstream, "")
+	client := signIn(t, st)
 
-	body, err := apiGet(t, server, "/api/overview")
+	body, err := apiGetAs(t, client.Client, server, "/api/overview")
 	if err != nil {
 		t.Fatalf("GET /api/overview error = %v", err)
 	}
@@ -139,9 +221,10 @@ func TestRotationSettingIsExposedAndValidated(t *testing.T) {
 	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
 		return http.StatusOK, "", nil
 	}}
-	_, _, server := newServer(t, upstream, "")
+	_, st, server := newServer(t, upstream, "")
+	client := signIn(t, st)
 
-	overview, err := apiGet(t, server, "/api/overview")
+	overview, err := apiGetAs(t, client.Client, server, "/api/overview")
 	if err != nil {
 		t.Fatalf("GET /api/overview error = %v", err)
 	}
@@ -149,12 +232,12 @@ func TestRotationSettingIsExposedAndValidated(t *testing.T) {
 		t.Errorf("rotation = %v, want the default least-recently-used", overview["rotation"])
 	}
 	rotations, _ := overview["rotations"].([]any)
-	if len(rotations) != 4 {
-		t.Errorf("rotations = %v, want the four strategies", rotations)
+	if len(rotations) != 5 {
+		t.Errorf("rotations = %v, want the five strategies", rotations)
 	}
 
 	// A valid change is stored and reported back.
-	body, err := apiJSON(t, server, http.MethodPatch, "/api/settings", `{"rotation":"round-robin"}`)
+	body, err := apiJSONAs(t, client.Client, server, http.MethodPatch, "/api/settings", `{"rotation":"round-robin"}`)
 	if err != nil {
 		t.Fatalf("PATCH /api/settings error = %v", err)
 	}
@@ -163,7 +246,7 @@ func TestRotationSettingIsExposedAndValidated(t *testing.T) {
 	}
 
 	// And it survives: the overview is read from the database, not memory.
-	overview, err = apiGet(t, server, "/api/overview")
+	overview, err = apiGetAs(t, client.Client, server, "/api/overview")
 	if err != nil {
 		t.Fatalf("GET /api/overview error = %v", err)
 	}
@@ -176,7 +259,8 @@ func TestRotationSettingRejectsUnknownValues(t *testing.T) {
 	upstream := &fakeUpstream{answer: func(recorded) (int, string, map[string]string) {
 		return http.StatusOK, "", nil
 	}}
-	_, _, server := newServer(t, upstream, "")
+	_, st, server := newServer(t, upstream, "")
+	client := signIn(t, st)
 
 	tests := []struct {
 		name string
@@ -191,7 +275,7 @@ func TestRotationSettingRejectsUnknownValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := http.DefaultClient.Do(mustRequest(t, http.MethodPatch, server.URL+"/api/settings", tt.body))
+			resp, err := client.Do(mustRequestWithSession(t, http.MethodPatch, server.URL+"/api/settings", tt.body))
 			if err != nil {
 				t.Fatalf("PATCH error = %v", err)
 			}
@@ -203,7 +287,7 @@ func TestRotationSettingRejectsUnknownValues(t *testing.T) {
 	}
 
 	// The rejected values must not have been written.
-	overview, err := apiGet(t, server, "/api/overview")
+	overview, err := apiGetAs(t, client.Client, server, "/api/overview")
 	if err != nil {
 		t.Fatalf("GET /api/overview error = %v", err)
 	}
@@ -222,9 +306,50 @@ func mustRequest(t *testing.T, method, url, body string) *http.Request {
 	return req
 }
 
+// mustRequestWithSession is mustRequest plus the CSRF marker a signed-in
+// browser sends; the session cookie comes from the client transport.
+func mustRequestWithSession(t *testing.T, method, url, body string) *http.Request {
+	t.Helper()
+	req := mustRequest(t, method, url, body)
+	req.Header.Set(csrfHeader, csrfValue)
+	return req
+}
+
 func apiJSON(t *testing.T, server *httptest.Server, method, path, body string) (map[string]any, error) {
 	t.Helper()
-	resp, err := http.DefaultClient.Do(mustRequest(t, method, server.URL+path, body))
+	return apiJSONWith(t, http.DefaultClient, server, method, path, body)
+}
+
+func apiJSONAs(t *testing.T, client *http.Client, server *httptest.Server, method, path, body string) (map[string]any, error) {
+	t.Helper()
+	return apiJSONAsStatus(t, client, server, method, path, body, http.StatusOK)
+}
+
+// apiJSONAsStatus is apiJSONAs for endpoints that answer 201.
+func apiJSONAsStatus(t *testing.T, client *http.Client, server *httptest.Server, method, path, body string, status int) (map[string]any, error) {
+	t.Helper()
+	req := mustRequest(t, method, server.URL+path, body)
+	req.Header.Set(csrfHeader, csrfValue)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var decoded map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != status {
+		return decoded, errors.New("unexpected status")
+	}
+	return decoded, nil
+}
+
+func apiJSONWith(t *testing.T, client *http.Client, server *httptest.Server, method, path, body string) (map[string]any, error) {
+	t.Helper()
+	req := mustRequest(t, method, server.URL+path, body)
+	req.Header.Set(csrfHeader, csrfValue)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

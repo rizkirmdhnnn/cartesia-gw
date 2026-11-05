@@ -68,6 +68,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// A GET that still carries credentials in the query string is the old form
+	// bug: answer with a page that scrubs the address instead of serving the
+	// console at that URL.
+	if rejectCredentialsInURL(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(s.index.body)

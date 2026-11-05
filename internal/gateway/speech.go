@@ -148,6 +148,8 @@ func (s *Server) writeAudio(w http.ResponseWriter, r *http.Request, resp *http.R
 
 // finish records the attempt. It runs with a detached context because a client
 // that hung up still deserves the row: the request was made and it was billed.
+// The client id is read from the request context by clientIDFrom, so the row
+// is attributed even though the write happens after the response.
 func (s *Server) finish(ctx context.Context, t cartesia.Translation, keyID, chars, bytes int64, status int, start time.Time, errText string) {
 	if len(errText) > 300 {
 		errText = errText[:300]
@@ -159,6 +161,7 @@ func (s *Server) finish(ctx context.Context, t cartesia.Translation, keyID, char
 		Chars:     chars,
 		Bytes:     bytes,
 		KeyID:     keyID,
+		ClientID:  clientIDFromContext(ctx),
 		Status:    status,
 		LatencyMS: time.Since(start).Milliseconds(),
 		Error:     errText,
