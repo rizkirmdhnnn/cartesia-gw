@@ -5,3 +5,4 @@ dist/
 *.sqlite-shm
 *.db
 .DS_Store
+cartesia-gw

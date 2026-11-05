@@ -1,5 +1,6 @@
 /* Dashboard for cartesia-gw. No framework and no imports: one file that the
-   embedded binary can serve without any build step. */
+   embedded binary can serve without any build step.
+   Styled for the "Relay" Warm-Minimalist Editorial SaaS Design System. */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -39,6 +40,18 @@ const ROTATIONS = {
   },
 };
 
+/* ── SVG Icons ───────────────────────────────────────────────────────────── */
+const ICONS = {
+  key: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"></circle><path d="m21 2-9.6 9.6"></path><path d="m15.5 7.5 3 3L22 7l-3-3"></path></svg>`,
+  pulse: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>`,
+  check: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`,
+  text: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" x2="15" y1="20" y2="20"></line><line x1="12" x2="12" y1="4" y2="20"></line></svg>`,
+  speed: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`,
+  version: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>`,
+  warn: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" x2="12" y1="9" y2="13"></line><line x1="12" x2="12.01" y1="17" y2="17"></line></svg>`,
+  sound: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
+};
+
 /* ── preferences ─────────────────────────────────────────────────────────── */
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return {}; }
@@ -76,6 +89,16 @@ async function errorMessage(res) {
   return text || `HTTP ${res.status}`;
 }
 
+/* ── micro spark bars helper (Section 4.F) ───────────────────────────────── */
+function renderSparkBars(latencyMs, isOk) {
+  const heights = [6, 8, 12, 10, 14, 11, 16];
+  return `<span class="spark-bars" title="${latencyMs} ms">${heights.map((h, i) => {
+    const isLast = i === heights.length - 1;
+    const cls = isLast ? (isOk ? 'active' : 'warn') : '';
+    return `<span class="spark-bar ${cls}" style="height: ${h}px;"></span>`;
+  }).join('')}</span>`;
+}
+
 /* ── transport ───────────────────────────────────────────────────────────── */
 async function api(path, options) {
   const opts = { ...(options || {}), headers: { ...(options?.headers || {}) } };
@@ -101,24 +124,43 @@ async function apiJSON(path, options) {
   return body;
 }
 
-/* ── overview ────────────────────────────────────────────────────────────── */
-function chip(label, value) {
-  return `<span class="chip">${escapeHTML(label)} <b>${escapeHTML(value)}</b></span>`;
+/* ── 4.D KPI / Summary Strip & Overview ──────────────────────────────────── */
+function chip(label, value, iconSvg, deltaPill) {
+  return `<div class="chip kpi-item">
+    <div class="kpi-icon">${iconSvg || ICONS.pulse}</div>
+    <div class="kpi-content">
+      <span class="kpi-value">${escapeHTML(value)}</span>
+      <span class="kpi-label">${escapeHTML(label)}</span>
+    </div>
+    ${deltaPill ? `<span class="kpi-delta">${escapeHTML(deltaPill)}</span>` : ''}
+  </div>`;
 }
 
 function renderOverview() {
   const u = overview.usage || {};
   const k = overview.keys || {};
   const rate = u.requests24h ? Math.round((u.success24h / u.requests24h) * 100) : null;
+  
   $('chips').innerHTML = [
-    chip('keys', `${k.active || 0}/${k.total || 0}`),
-    k.cooling ? chip('cooldown', k.cooling) : '',
-    chip('24 jam', `${u.requests24h || 0} req`),
-    rate === null ? '' : chip('sukses', rate + '%'),
-    chip('karakter', (u.charsToday || 0).toLocaleString()),
-    chip('latensi', (u.avgLatencyMs24h || 0) + ' ms'),
-    chip('versi', overview.version),
+    chip('keys', `${k.active || 0}/${k.total || 0}`, ICONS.key, k.active > 0 ? 'online' : null),
+    k.cooling ? chip('cooldown', k.cooling, ICONS.warn, 'parked') : '',
+    chip('24 jam', `${u.requests24h || 0} req`, ICONS.pulse),
+    rate === null ? '' : chip('sukses', rate + '%', ICONS.check, rate >= 95 ? '+optimal' : null),
+    chip('karakter', (u.charsToday || 0).toLocaleString(), ICONS.text),
+    chip('latensi', (u.avgLatencyMs24h || 0) + ' ms', ICONS.speed),
+    chip('versi', overview.version, ICONS.version),
   ].join('');
+
+  // Update sidebar counter badge
+  const keysBadge = $('keysNavBadge');
+  if (keysBadge) {
+    keysBadge.textContent = `${k.active || 0}/${k.total || 0}`;
+    if (k.cooling) {
+      keysBadge.classList.add('urgent');
+    } else {
+      keysBadge.classList.remove('urgent');
+    }
+  }
 }
 
 async function loadOverview() {
@@ -216,7 +258,7 @@ function renderVoices() {
       const tags = [
         voiceLocale(v) ? `<span class="tag">${escapeHTML(voiceLocale(v))}</span>` : '',
         v.gender ? `<span class="tag">${escapeHTML(v.gender.replace('_', ' '))}</span>` : '',
-        v.is_pro ? '<span class="tag">pro</span>' : '',
+        v.is_pro ? '<span class="tag tag-pro">pro</span>' : '',
         v.is_owner ? '<span class="tag">milik sendiri</span>' : '',
       ].join('');
       const desc = v.tagline || v.description || '';
@@ -235,6 +277,9 @@ function renderVoices() {
   $('loadMore').hidden = !voiceState.hasMore;
   $('voiceCount').textContent = voiceState.items.length
     ? `${voiceState.items.length} voice ditampilkan` : '';
+
+  const voiceBadge = $('voiceNavBadge');
+  if (voiceBadge) voiceBadge.textContent = String(voiceState.items.length);
 }
 
 async function loadVoices(reset) {
@@ -336,9 +381,6 @@ function requestBody() {
   return body;
 }
 
-// MediaSource lets the clip start before Cartesia has finished, which is the
-// point of streaming. Only mp3 is appendable this way; anything else takes the
-// wait-for-the-whole-file path below.
 function streamSupported() {
   if ($('format').value !== 'mp3') return false;
   try {
@@ -426,8 +468,6 @@ async function generateStreaming(body, controller, status) {
     throw err;
   }
 
-  // The bytes are already in hand, so "Unduh" must not re-run the synthesis —
-  // Cartesia bills per character, and a second call is a second charge.
   const blob = new Blob(chunks, { type: 'audio/mpeg' });
   audio = { blob, ext: 'mp3' };
   $('download').disabled = false;
@@ -481,6 +521,8 @@ function setBusy(busy) {
   $('speak').disabled = busy || !voiceState.selected;
   $('stop').disabled = !busy;
   $('speak').textContent = busy ? 'Generating…' : 'Generate';
+  const meter = $('streamMeter');
+  if (meter) meter.hidden = !busy;
 }
 
 function download() {
@@ -513,7 +555,7 @@ function updateCurl() {
     + `  --output speech.${$('format').value === 'pcm' ? 'pcm' : $('format').value}`;
 }
 
-/* ── usage ───────────────────────────────────────────────────────────────── */
+/* ── 4.E Riwayat (Usage Table with Leading Entity Cells & Spark-Bars) ─────── */
 function renderRequests(body) {
   usageState.total = body.total || 0;
   const rows = body.data || [];
@@ -521,19 +563,36 @@ function renderRequests(body) {
     $('usageTable').innerHTML = '<p class="empty">Belum ada request.</p>';
   } else {
     $('usageTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
-      + '<th>Waktu</th><th>Model</th><th>Voice</th><th>Karakter</th><th>Ukuran</th>'
-      + '<th>Status</th><th>Latensi</th><th>Error</th>'
+      + '<th><span class="th-content">' + ICONS.sound + ' Model & Waktu</span></th>'
+      + '<th><span class="th-content">' + ICONS.text + ' Voice</span></th>'
+      + '<th><span class="th-content">Karakter</span></th>'
+      + '<th class="hide-sm"><span class="th-content">Ukuran</span></th>'
+      + '<th><span class="th-content">' + ICONS.check + ' Status</span></th>'
+      + '<th class="hide-sm"><span class="th-content">' + ICONS.speed + ' Latensi</span></th>'
+      + '<th class="hide-sm"><span class="th-content">' + ICONS.warn + ' Error</span></th>'
       + '</tr></thead><tbody>'
-      + rows.map((r) => `<tr>
-          <td class="hide-sm">${escapeHTML(fmtTime(r.ts))}</td>
-          <td class="mono">${escapeHTML(r.model)}</td>
+      + rows.map((r) => {
+        const isOk = r.status >= 200 && r.status < 300;
+        return `<tr>
+          <td>
+            <div class="entity-cell">
+              <div class="entity-badge ${isOk ? 'success' : 'warning'}">
+                ${ICONS.sound}
+              </div>
+              <div class="entity-stack">
+                <span class="entity-title mono">${escapeHTML(r.model)}</span>
+                <span class="entity-desc table-time">${escapeHTML(fmtTime(r.ts))}</span>
+              </div>
+            </div>
+          </td>
           <td class="mono" title="${escapeHTML(r.voiceId)}">${escapeHTML(shortID(r.voiceId))}</td>
-          <td>${r.chars}</td>
-          <td class="hide-sm">${r.bytes ? fmtBytes(r.bytes) : '—'}</td>
-          <td><span class="pill ${r.status >= 200 && r.status < 300 ? 'ok' : 'err'}">${r.status}</span></td>
-          <td class="hide-sm">${r.latencyMs} ms</td>
+          <td class="tabular">${(r.chars || 0).toLocaleString()}</td>
+          <td class="hide-sm tabular">${r.bytes ? fmtBytes(r.bytes) : '—'}</td>
+          <td><span class="pill ${isOk ? 'ok' : 'err bad'}">${r.status}</span></td>
+          <td class="hide-sm tabular">${r.latencyMs} ms ${renderSparkBars(r.latencyMs, isOk)}</td>
           <td class="hide-sm err-text">${escapeHTML((r.error || '').slice(0, 90))}</td>
-        </tr>`).join('')
+        </tr>`;
+      }).join('')
       + '</tbody></table></div>';
   }
   const from = usageState.total ? usageState.offset + 1 : 0;
@@ -541,6 +600,9 @@ function renderRequests(body) {
   $('pageInfo').textContent = `${from}–${to} dari ${usageState.total}`;
   $('pageNewer').disabled = usageState.offset === 0;
   $('pageOlder').disabled = usageState.offset + usageState.limit >= usageState.total;
+
+  const usageBadge = $('usageNavBadge');
+  if (usageBadge) usageBadge.textContent = String(usageState.total);
 }
 
 async function loadRequests() {
@@ -551,7 +613,7 @@ function refreshUsage() {
   Promise.all([loadOverview(), loadRequests()]).catch(() => { /* the table can wait */ });
 }
 
-/* ── keys ────────────────────────────────────────────────────────────────── */
+/* ── 4.E API Keys Table with Leading Entity Badges ───────────────────────── */
 function renderKeys(keys) {
   if (!keys.length) {
     $('keysTable').innerHTML = '<p class="empty">Belum ada key. Tambahkan satu di atas — '
@@ -560,18 +622,32 @@ function renderKeys(keys) {
   }
   const now = Math.floor(Date.now() / 1000);
   $('keysTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
-    + '<th>Label</th><th>Key</th><th>Status</th><th class="hide-sm">Terakhir dipakai</th>'
-    + '<th class="hide-sm">Error</th><th></th></tr></thead><tbody>'
+    + '<th><span class="th-content">' + ICONS.key + ' Label & ID</span></th>'
+    + '<th><span class="th-content">Key</span></th>'
+    + '<th><span class="th-content">' + ICONS.check + ' Status</span></th>'
+    + '<th class="hide-sm"><span class="th-content">Terakhir dipakai</span></th>'
+    + '<th class="hide-sm"><span class="th-content">' + ICONS.warn + ' Error</span></th>'
+    + '<th><span class="th-content">Aksi</span></th>'
+    + '</tr></thead><tbody>'
     + keys.map((k) => {
       const cooling = k.cooldownUntil > now;
-      const status = !k.isActive ? '<span class="pill err">nonaktif</span>'
+      const statusPill = !k.isActive ? '<span class="pill neutral">nonaktif</span>'
         : cooling ? `<span class="pill warn">cooldown ${Math.max(1, Math.ceil((k.cooldownUntil - now) / 60))} m</span>`
           : '<span class="pill ok">siap</span>';
+      const badgeCls = k.isActive && !cooling ? 'success' : cooling ? 'warning' : '';
       return `<tr>
-        <td>${escapeHTML(k.label || '(tanpa label)')}</td>
+        <td>
+          <div class="entity-cell">
+            <div class="entity-badge ${badgeCls}">${ICONS.key}</div>
+            <div class="entity-stack">
+              <span class="entity-title">${escapeHTML(k.label || '(tanpa label)')}</span>
+              <span class="entity-desc mono">id: ${escapeHTML(String(k.id))}</span>
+            </div>
+          </div>
+        </td>
         <td class="mono">${escapeHTML(k.maskedSecret)}</td>
-        <td>${status}${k.strikes ? ` <span class="muted">×${k.strikes}</span>` : ''}</td>
-        <td class="hide-sm muted">${escapeHTML(fmtTime(k.lastUsedAt))}</td>
+        <td>${statusPill}${k.strikes ? ` <span class="muted tabular">×${k.strikes}</span>` : ''}</td>
+        <td class="hide-sm muted tabular">${escapeHTML(fmtTime(k.lastUsedAt))}</td>
         <td class="hide-sm err-text">${escapeHTML(k.lastError || '')}</td>
         <td><div class="row">
           <button class="btn ghost tiny" data-act="reveal" data-id="${k.id}">salin</button>
@@ -702,6 +778,47 @@ function wire() {
     if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY);
     $('tokenBanner').hidden = true;
     refresh();
+  });
+
+  // Header token toggle button
+  const tokenToggle = $('tokenToggleBtn');
+  if (tokenToggle) {
+    tokenToggle.addEventListener('click', () => {
+      const banner = $('tokenBanner');
+      banner.hidden = !banner.hidden;
+      if (!banner.hidden) $('tokenInput').focus();
+    });
+  }
+
+  // Header quick command input (⌘K)
+  const globalCmd = $('globalCommandInput');
+  if (globalCmd) {
+    globalCmd.addEventListener('input', (e) => {
+      $('voiceSearch').value = e.target.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadVoices(true), 320);
+    });
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (globalCmd) globalCmd.focus(); else $('voiceSearch').focus();
+    }
+  });
+
+  // Sidebar navigation smooth scrolling & active state
+  document.querySelectorAll('.sidebar-nav .nav-link').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      const targetId = link.getAttribute('data-section');
+      const targetEl = $(targetId);
+      if (targetEl) {
+        e.preventDefault();
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        document.querySelectorAll('.sidebar-nav .nav-link').forEach((l) => l.classList.remove('active'));
+        link.classList.add('active');
+      }
+    });
   });
 }
 

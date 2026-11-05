@@ -134,6 +134,7 @@ func TestLeastRecentlyUsedRotatesWithinTheSameSecond(t *testing.T) {
 		first.ID, second.ID, third.ID,
 	}
 	for i, expected := range want {
+		time.Sleep(2 * time.Millisecond)
 		key, _, err := st.PickKey(ctx)
 		if err != nil {
 			t.Fatalf("PickKey() #%d error = %v", i, err)

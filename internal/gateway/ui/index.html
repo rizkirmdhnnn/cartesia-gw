@@ -3,149 +3,325 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>cartesia-gw</title>
+<meta name="color-scheme" content="light">
+<title>cartesia-gw — Relay Editorial Console</title>
 <link rel="icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><span class="mark"></span>cartesia<span class="accent">-gw</span></div>
-  <div class="chips" id="chips"></div>
-</header>
+<div class="app-layout">
 
-<div class="tokenbar" id="tokenBanner" hidden>
-  <span class="material">Gateway token required.</span>
-  <input id="tokenInput" type="password" placeholder="tempel nilai -gateway-token" autocomplete="off">
-  <button class="btn ghost tiny" id="tokenSave">Simpan</button>
+  <!-- Sidebar Navigation -->
+  <aside class="app-sidebar" aria-label="Navigasi Utama">
+    <div class="sidebar-header">
+      <div class="brand">
+        <span class="mark"></span>
+        <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
+        <span class="brand-pill">Relay</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <span class="nav-eyebrow">Studio Engine</span>
+        <a href="#controlsPanel" class="nav-link active" data-section="controlsPanel">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+          </svg>
+          <span class="nav-label">Synthesize</span>
+        </a>
+        <a href="#libraryPanel" class="nav-link" data-section="libraryPanel">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" x2="12" y1="19" y2="22"></line>
+          </svg>
+          <span class="nav-label">Voice Library</span>
+          <span class="nav-badge" id="voiceNavBadge">0</span>
+        </a>
+      </div>
+
+      <div class="nav-group">
+        <span class="nav-eyebrow">Operations</span>
+        <a href="#usagePanel" class="nav-link" data-section="usagePanel">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          <span class="nav-label">Riwayat</span>
+          <span class="nav-badge" id="usageNavBadge">0</span>
+        </a>
+        <a href="#keysPanel" class="nav-link" data-section="keysPanel">
+          <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7.5" cy="15.5" r="5.5"></circle>
+            <path d="m21 2-9.6 9.6"></path>
+            <path d="m15.5 7.5 3 3L22 7l-3-3"></path>
+          </svg>
+          <span class="nav-label">API Keys</span>
+          <span class="nav-badge" id="keysNavBadge">0</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="system-status-card">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span class="status-name">Gateway Active</span>
+        </div>
+        <span class="status-sub" id="sidebarMeta">Proxying /v1/audio/speech</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content Area -->
+  <div class="app-main">
+
+    <!-- Top Header Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand-mobile">
+          <span class="mark"></span>
+          <span class="brand-text">cartesia<span class="brand-serif">-gw</span></span>
+        </div>
+        <div class="breadcrumb">
+          <span class="breadcrumb-root">Cartesia Gateway</span>
+          <span class="breadcrumb-sep">/</span>
+          <span class="breadcrumb-curr">Operational Console</span>
+        </div>
+      </div>
+
+      <div class="topbar-center">
+        <div class="search-command-bar" id="searchCommandBar">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+          </svg>
+          <input type="text" id="globalCommandInput" class="search-command-input" placeholder="Cari voice, model, atau shortcut…" autocomplete="off">
+          <kbd class="keycap">⌘K</kbd>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <div class="live-pill">
+          <span class="live-pulse"></span>
+          <span>Live Audio Proxy</span>
+        </div>
+        <button class="btn ghost tiny token-toggle-btn" id="tokenToggleBtn" title="Pengaturan Gateway Token">Token</button>
+      </div>
+    </header>
+
+    <!-- Token Banner (Recessed Warning Alert Well) -->
+    <div class="tokenbar" id="tokenBanner" hidden>
+      <div class="tokenbar-msg">
+        <span class="tokenbar-dot"></span>
+        <span class="material">Gateway token required.</span>
+      </div>
+      <input id="tokenInput" type="password" placeholder="tempel nilai -gateway-token" autocomplete="off">
+      <button class="btn primary tiny" id="tokenSave">Simpan</button>
+    </div>
+
+    <!-- Workspace -->
+    <main class="workspace">
+
+      <!-- Page Title & Editorial Header -->
+      <header class="page-header">
+        <div class="page-title-wrap">
+          <span class="category-eyebrow">Cartesia Operational Suite</span>
+          <h1 class="page-title">Voice Synthesis & Key Router</h1>
+          <p class="page-desc">High-concurrency Cartesia speech gateway with automated key rotation, rate-limit cooling, and real-time streaming audio.</p>
+        </div>
+      </header>
+
+      <!-- KPI / Summary Strip (Unified Horizontal Bar) -->
+      <section class="kpi-strip-section" aria-label="Metrik Operasional">
+        <div class="chips" id="chips"></div>
+      </section>
+
+      <!-- Two-Column Studio Grid -->
+      <div class="workspace-grid">
+
+        <!-- Synthesize Controls Panel -->
+        <section class="panel controls" id="controlsPanel" aria-labelledby="controlsTitle">
+          <div class="panel-head">
+            <div>
+              <span class="category-eyebrow">Audio Engine</span>
+              <h2 id="controlsTitle">Synthesize</h2>
+            </div>
+            <div class="engine-badge">
+              <span class="engine-dot"></span>
+              <span>Online</span>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="model">Model</label>
+              <select id="model"></select>
+            </div>
+            <div class="field">
+              <label for="format">Format</label>
+              <select id="format">
+                <option value="mp3">mp3</option>
+                <option value="wav">wav</option>
+                <option value="pcm">pcm (raw s16le)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Recessed Selected Voice Well -->
+          <div class="voice-picked" id="voicePicked">
+            <div class="vp-entity">
+              <div class="vp-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" x2="12" y1="19" y2="22"></line>
+                </svg>
+              </div>
+              <div class="vp-text">
+                <span class="vp-label">Selected Voice</span>
+                <strong id="voiceName">belum dipilih</strong>
+                <span class="muted" id="voiceMeta">pilih dari pustaka di sebelah, lalu klik Generate</span>
+              </div>
+            </div>
+            <button class="btn ghost tiny" id="voicePlaySelected" title="Putar contoh suara" disabled>Putar</button>
+          </div>
+
+          <div class="field">
+            <label for="text">Teks <span class="muted" id="charCount">0 karakter · 0 kata</span></label>
+            <textarea id="text" rows="5" spellcheck="false">Halo, ini uji suara dari cartesia-gw.</textarea>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="speed">Speed <output id="speedOut">1.00</output></label>
+              <input id="speed" type="range" min="0.6" max="1.5" step="0.05" value="1">
+            </div>
+            <div class="field">
+              <label for="volume">Volume <output id="volumeOut">1.00</output></label>
+              <input id="volume" type="range" min="0.5" max="2" step="0.05" value="1">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="emotion">Emotion</label>
+            <select id="emotion"></select>
+          </div>
+
+          <!-- Progress Bar for streaming runs -->
+          <div class="stream-meter" id="streamMeter" hidden>
+            <div class="stream-track">
+              <div class="stream-fill" id="streamFill"></div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn primary" id="speak">Generate</button>
+            <button class="btn ghost" id="stop" disabled>Stop</button>
+            <button class="btn ghost" id="download" disabled>Unduh</button>
+          </div>
+          <p class="status muted" id="speakStatus"></p>
+
+          <audio id="audio" controls preload="metadata" hidden></audio>
+
+          <details class="curl">
+            <summary>panggilan setara (cURL)</summary>
+            <pre id="curl"></pre>
+          </details>
+        </section>
+
+        <!-- Voice Library Panel -->
+        <section class="panel library" id="libraryPanel" aria-labelledby="libraryTitle">
+          <div class="panel-head">
+            <div>
+              <span class="category-eyebrow">Voice Roster</span>
+              <h2 id="libraryTitle">Voice library</h2>
+            </div>
+            <span class="muted" id="voiceCount"></span>
+          </div>
+
+          <div class="filters">
+            <div class="search-input-wrap">
+              <svg class="input-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.35-4.35"></path>
+              </svg>
+              <input id="voiceSearch" type="search" placeholder="Cari nama, deskripsi, atau id…" autocomplete="off">
+            </div>
+            <input id="langFilter" placeholder="Bahasa (en, id, es-MX)" autocomplete="off" spellcheck="false">
+            <select id="genderFilter">
+              <option value="">Semua gender</option>
+              <option value="masculine">Masculine</option>
+              <option value="feminine">Feminine</option>
+              <option value="gender_neutral">Gender neutral</option>
+            </select>
+          </div>
+
+          <div class="voice-list" id="voiceList" role="listbox" aria-label="Daftar voice"></div>
+
+          <div class="panel-foot">
+            <button class="btn ghost tiny" id="loadMore" hidden>Muat lagi</button>
+            <button class="btn ghost tiny" id="voiceRefresh">Muat ulang</button>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Riwayat (Usage History) Panel -->
+      <section class="panel span" id="usagePanel" aria-labelledby="usageTitle">
+        <div class="panel-head">
+          <div>
+            <span class="category-eyebrow">Audit & Traffic Log</span>
+            <h2 id="usageTitle">Riwayat</h2>
+          </div>
+          <span class="muted" id="pageInfo"></span>
+        </div>
+        <div id="usageTable"></div>
+        <div class="panel-foot">
+          <button class="btn ghost tiny" id="pageNewer">← lebih baru</button>
+          <button class="btn ghost tiny" id="pageOlder">lebih lama →</button>
+        </div>
+      </section>
+
+      <!-- API Keys Panel -->
+      <section class="panel span" id="keysPanel" aria-labelledby="keysTitle">
+        <div class="panel-head">
+          <div>
+            <span class="category-eyebrow">Credential Router</span>
+            <h2 id="keysTitle">API keys</h2>
+          </div>
+          <div class="rotation">
+            <label for="rotation">Rotasi key</label>
+            <select id="rotation"></select>
+          </div>
+        </div>
+        <p class="muted rotation-hint" id="rotationHint"></p>
+
+        <div class="row add-key">
+          <div class="field">
+            <label for="keyLabel">Label</label>
+            <input id="keyLabel" placeholder="mis. cartesia-utama" autocomplete="off">
+          </div>
+          <div class="field grow">
+            <label for="keySecret">Cartesia API key (sk_car_…)</label>
+            <input id="keySecret" type="password" autocomplete="off">
+          </div>
+          <button class="btn primary" id="keyAdd">Tambah</button>
+        </div>
+        <div id="keysTable"></div>
+      </section>
+
+    </main>
+
+  </div>
+
 </div>
-
-<main class="workspace">
-
-  <section class="panel controls" aria-labelledby="controlsTitle">
-    <h2 id="controlsTitle">Synthesize</h2>
-
-    <div class="row">
-      <div class="field">
-        <label for="model">Model</label>
-        <select id="model"></select>
-      </div>
-      <div class="field">
-        <label for="format">Format</label>
-        <select id="format">
-          <option value="mp3">mp3</option>
-          <option value="wav">wav</option>
-          <option value="pcm">pcm (raw s16le)</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="voice-picked" id="voicePicked">
-      <div class="vp-text">
-        <span class="vp-label">Voice</span>
-        <strong id="voiceName">belum dipilih</strong>
-        <span class="muted" id="voiceMeta"></span>
-      </div>
-      <button class="btn ghost tiny" id="voicePlaySelected" title="Putar contoh suara" disabled>Putar</button>
-    </div>
-
-    <div class="field">
-      <label for="text">Teks <span class="muted" id="charCount">0 karakter · 0 kata</span></label>
-      <textarea id="text" rows="6" spellcheck="false">Halo, ini uji suara dari cartesia-gw.</textarea>
-    </div>
-
-    <div class="row">
-      <div class="field">
-        <label for="speed">Speed <output id="speedOut">1.00</output></label>
-        <input id="speed" type="range" min="0.6" max="1.5" step="0.05" value="1">
-      </div>
-      <div class="field">
-        <label for="volume">Volume <output id="volumeOut">1.00</output></label>
-        <input id="volume" type="range" min="0.5" max="2" step="0.05" value="1">
-      </div>
-    </div>
-
-    <div class="field">
-      <label for="emotion">Emotion</label>
-      <select id="emotion"></select>
-    </div>
-
-    <div class="actions">
-      <button class="btn primary" id="speak">Generate</button>
-      <button class="btn ghost" id="stop" disabled>Stop</button>
-      <button class="btn ghost" id="download" disabled>Unduh</button>
-    </div>
-    <p class="status muted" id="speakStatus"></p>
-
-    <audio id="audio" controls preload="metadata" hidden></audio>
-
-    <details class="curl">
-      <summary>panggilan setara</summary>
-      <pre id="curl"></pre>
-    </details>
-  </section>
-
-  <section class="panel library" aria-labelledby="libraryTitle">
-    <div class="panel-head">
-      <h2 id="libraryTitle">Voice library</h2>
-      <span class="muted" id="voiceCount"></span>
-    </div>
-
-    <div class="filters">
-      <input id="voiceSearch" type="search" placeholder="Cari nama, deskripsi, atau id…" autocomplete="off">
-      <input id="langFilter" placeholder="Bahasa (en, id, es-MX)" autocomplete="off" spellcheck="false">
-      <select id="genderFilter">
-        <option value="">Semua gender</option>
-        <option value="masculine">Masculine</option>
-        <option value="feminine">Feminine</option>
-        <option value="gender_neutral">Gender neutral</option>
-      </select>
-    </div>
-
-    <div class="voice-list" id="voiceList" role="listbox" aria-label="Daftar voice"></div>
-
-    <div class="panel-foot">
-      <button class="btn ghost tiny" id="loadMore" hidden>Muat lagi</button>
-      <button class="btn ghost tiny" id="voiceRefresh">Muat ulang</button>
-    </div>
-  </section>
-
-  <section class="panel span" aria-labelledby="usageTitle">
-    <div class="panel-head">
-      <h2 id="usageTitle">Riwayat</h2>
-      <span class="muted" id="pageInfo"></span>
-    </div>
-    <div id="usageTable"></div>
-    <div class="panel-foot">
-      <button class="btn ghost tiny" id="pageNewer">← lebih baru</button>
-      <button class="btn ghost tiny" id="pageOlder">lebih lama →</button>
-    </div>
-  </section>
-
-  <section class="panel span" aria-labelledby="keysTitle">
-    <div class="panel-head">
-      <h2 id="keysTitle">API keys</h2>
-      <div class="rotation">
-        <label for="rotation">Rotasi key</label>
-        <select id="rotation"></select>
-      </div>
-    </div>
-    <p class="muted rotation-hint" id="rotationHint"></p>
-    <div class="row add-key">
-      <div class="field">
-        <label for="keyLabel">Label</label>
-        <input id="keyLabel" placeholder="mis. cartesia-utama" autocomplete="off">
-      </div>
-      <div class="field grow">
-        <label for="keySecret">Cartesia API key (sk_car_…)</label>
-        <input id="keySecret" type="password" autocomplete="off">
-      </div>
-      <button class="btn primary" id="keyAdd">Tambah</button>
-    </div>
-    <div id="keysTable"></div>
-  </section>
-
-</main>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/app.js" type="module"></script>
