@@ -6,3 +6,7 @@ dist/
 *.db
 .DS_Store
 cartesia-gw
+.env
+.env.*
+!.env.example
+backups/

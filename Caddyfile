@@ -1,0 +1,24 @@
+{
+	# Replace DOMAIN in .env with your hostname. Caddy provisions and renews
+	# the certificate on first request (needs 80 and 443 reachable).
+	{$DOMAIN} {
+		encode zstd gzip
+
+		# Audio streams can be long-lived; do not cut them at 60s.
+		reverse_proxy cartesia-gw:20140 {
+			flush_interval -1
+			transport http {
+				response_header_timeout 10m
+			}
+		}
+
+		header {
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			-Server
+		}
+	}
+
+	# Anything arriving over plain HTTP is redirected by the site block above.
+}

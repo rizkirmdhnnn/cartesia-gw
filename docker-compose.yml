@@ -1,0 +1,36 @@
+name: ${COMPOSE_PROJECT_NAME:-cartesia-gw}
+
+services:
+  # The gateway. Built locally because there is no published image.
+  cartesia-gw:
+    build:
+      context: .
+      args:
+        VERSION: ${CARTESIA_GW_IMAGE_TAG:-dev}
+    image: cartesia-gw:${CARTESIA_GW_IMAGE_TAG:-dev}
+    restart: unless-stopped
+
+    # Required: the binary refuses to bind 0.0.0.0 without a token, because the
+    # dashboard lists your Cartesia API keys. Keep it in .env (chmod 600).
+    environment:
+      CARTESIA_GW_TOKEN: ${CARTESIA_GW_TOKEN:?CARTESIA_GW_TOKEN is required; copy .env.example to .env}
+      CARTESIA_GW_LOG_LEVEL: ${CARTESIA_GW_LOG_LEVEL:-info}
+      CARTESIA_GW_ROTATION: ${CARTESIA_GW_ROTATION:-least-recently-used}
+      CARTESIA_GW_RETENTION_DAYS: ${CARTESIA_GW_RETENTION_DAYS:-30}
+      CARTESIA_GW_CORS_ORIGIN: ${CARTESIA_GW_CORS_ORIGIN:-}
+      CARTESIA_GW_VERSION_HEADER: ${CARTESIA_GW_VERSION_HEADER:-2026-08-14}
+      CARTESIA_GW_BASE_URL: ${CARTESIA_GW_BASE_URL:-https://api.cartesia.ai}
+
+    ports:
+      # Loopback-only by default. With the tls profile, Caddy is the public
+      # door; without it, change the bind to 0.0.0.0 only behind a firewall.
+      - "${CARTESIA_GW_BIND:-127.0.0.1}:20140:20140"
+
+    volumes:
+      - data:/data
+
+    # Give an in-flight synthesis time to finish before SIGKILL.
+    stop_grace_period: 15s
+
+volumes:
+  data:

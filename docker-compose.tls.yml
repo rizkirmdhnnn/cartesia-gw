@@ -1,0 +1,48 @@
+name: ${COMPOSE_PROJECT_NAME:-cartesia-gw}
+
+# TLS front for the VPS. Use it alongside the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile tls up -d --build
+# or simply `make up-tls`, which passes both files.
+#
+# Prerequisites: DOMAIN and ACME_EMAIL in .env, DNS A/AAAA for DOMAIN pointing
+# at the VPS, and ports 80+443 open. Keep CARTESIA_GW_BIND=127.0.0.1 so the
+# plain-HTTP port stays unreachable from outside.
+
+services:
+  cartesia-gw:
+    # The only public listener is Caddy, so do not publish the raw port at all.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: cartesia-gw-caddy
+    profiles: ["tls"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required, set it in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      cartesia-gw:
+        condition: service_started
+    healthcheck:
+      # Public HTTPS is the real readiness signal: it covers DNS, the
+      # certificate and the proxied /healthz round trip in one probe.
+      test:
+        - CMD-SHELL
+        - wget -qO- "https://$${DOMAIN}/healthz" >/dev/null 2>&1
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,23 @@
+# Keep the build context to what `go build` needs: the source and the module
+# files. Tests, docs and local build output never reach the daemon.
+.git
+.gitignore
+.github
+.vscode
+.idea
+bin/
+dist/
+Dockerfile
+.dockerignore
+docker-compose*.yml
+compose*.yml
+*.md
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+.env
+.env.*
+.DS_Store
+cartesia-gw
+cartesia-gw.exe

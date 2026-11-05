@@ -44,8 +44,8 @@ cross: ## build every release target with CGO disabled
 clean:
 	rm -rf bin dist
 
-docker:
-	docker build -t $(BINARY):$(VERSION) .
+docker: ## build the container image
+	docker build --build-arg VERSION=$(VERSION) -t $(BINARY):$(VERSION) .
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
