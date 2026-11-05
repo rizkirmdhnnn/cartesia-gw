@@ -28,6 +28,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS keys (
 	id             INTEGER PRIMARY KEY AUTOINCREMENT,
 	label          TEXT    NOT NULL DEFAULT '',
+	provider       TEXT    NOT NULL DEFAULT 'cartesia',
 	secret         TEXT    NOT NULL UNIQUE,
 	is_active      INTEGER NOT NULL DEFAULT 1,
 	priority       INTEGER NOT NULL DEFAULT 50,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS keys (
 CREATE TABLE IF NOT EXISTS requests (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	ts         INTEGER NOT NULL,
+	provider   TEXT    NOT NULL DEFAULT 'cartesia',
 	model      TEXT    NOT NULL,
 	voice_id   TEXT    NOT NULL,
 	chars      INTEGER NOT NULL,
@@ -50,7 +52,8 @@ CREATE TABLE IF NOT EXISTS requests (
 	client_id  INTEGER NOT NULL DEFAULT 0,
 	status     INTEGER NOT NULL,
 	latency_ms INTEGER NOT NULL,
-	error      TEXT    NOT NULL DEFAULT ''
+	error      TEXT    NOT NULL DEFAULT '',
+	adjustments TEXT   NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests (ts DESC);
@@ -161,6 +164,26 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx,
 			`ALTER TABLE requests ADD COLUMN client_id INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("add requests.client_id: %w", err)
+		}
+	}
+	// provider on both tables. Existing keys were Cartesia keys because that
+	// was the only provider, so the column default is exactly right for them.
+	if !columns["provider"] {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'cartesia'`); err != nil {
+			return fmt.Errorf("add keys.provider: %w", err)
+		}
+	}
+	if !requestColumns["provider"] {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'cartesia'`); err != nil {
+			return fmt.Errorf("add requests.provider: %w", err)
+		}
+	}
+	if !requestColumns["adjustments"] {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE requests ADD COLUMN adjustments TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add requests.adjustments: %w", err)
 		}
 	}
 	return nil

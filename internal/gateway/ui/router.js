@@ -13,25 +13,25 @@ const PAGES = {
   overview: {
     eyebrow: 'Live Traffic',
     title: 'Traffic map',
-    desc: 'Klien, gateway, dan key Cartesia dalam satu pandangan: siapa yang memakai, lewat key mana, dan key apa yang dipilih berikutnya.',
+    desc: 'Klien, gateway, dan key upstream dari setiap provider dalam satu pandangan: siapa yang memakai, lewat key mana, dan key apa yang dipilih berikutnya.',
     badge: 'overviewNavBadge',
   },
   synthesize: {
     eyebrow: 'Studio Engine',
     title: 'Voice Synthesis',
-    desc: 'Sintesis suara Cartesia yang mengalir: pilih voice, atur speed dan emosi, lalu dengar atau unduh hasilnya tanpa membayar dua kali.',
+    desc: 'Sintesis suara lewat satu endpoint: model memilih providernya (Cartesia atau ElevenLabs), lalu dengar atau unduh hasilnya tanpa membayar dua kali.',
     badge: null,
   },
   history: {
     eyebrow: 'Audit Trail',
     title: 'Riwayat request',
-    desc: 'Setiap attempt tercatat: model, voice, karakter, ukuran audio, key Cartesia yang dipakai, status, dan latensi.',
+    desc: 'Setiap attempt tercatat: provider, model, voice, ukuran audio, key yang dipakai, status, latensi, dan apa saja yang gateway sesuaikan.',
     badge: 'usageNavBadge',
   },
   keys: {
     eyebrow: 'Upstream Credentials',
-    title: 'Cartesia keys',
-    desc: 'Kunci ke Cartesia beserta state cooldown-nya. Di sinilah strategi rotasi dipilih dan prioritas tiap key diatur.',
+    title: 'Upstream keys',
+    desc: 'Kunci ke Cartesia dan ElevenLabs beserta state cooldown-nya. Rotasi berjalan per provider; di sinilah strateginya dipilih.',
     badge: 'keysNavBadge',
   },
   clients: {

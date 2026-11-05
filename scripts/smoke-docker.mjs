@@ -77,6 +77,8 @@ async function call(method, path, body, opts = {}) {
 
   r = await call('GET', '/api/routing');
   log(r.status === 200 && Array.isArray(r.json.keys), 'routing snapshot', r.json && r.json.strategy);
+  log(Array.isArray(r.json.providers) && r.json.providers.length === 2,
+    'routing names both providers', (r.json.providers || []).map((p) => p.name).join(','));
 
   r = await call('POST', '/api/clients', { label: 'docker-smoke' });
   const secret = r.json && r.json.secret;
@@ -86,6 +88,29 @@ async function call(method, path, body, opts = {}) {
   log(anon.status === 401, '/v1 refuses an anonymous request', String(anon.status));
   const withKey = await fetch(base + '/v1/models', { headers: { Authorization: 'Bearer ' + secret } });
   log(withKey.status === 200, '/v1 accepts the client key', String(withKey.status));
+  const catalogue = withKey.status === 200 ? await withKey.json() : { data: [] };
+  const ids = (catalogue.data || []).map((m) => m.id);
+  log(ids.some((id) => id.startsWith('cartesia/')) && ids.some((id) => id.startsWith('elevenlabs/')),
+    '/v1/models is prefixed and covers both providers', ids.length + ' models');
+
+  // A provider with no key answers 424 and names itself, rather than a 400
+  // about the payload or a silent fallback to the other vendor.
+  const noKey = await fetch(base + '/v1/audio/speech', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'elevenlabs/eleven_v3', input: 'hello', voice: 'JBFqnCBsd6RMkjVDRZzb' }),
+  });
+  log(noKey.status === 424, 'a provider without a key answers 424', String(noKey.status));
+
+  // The model string is the only routing input: a bare legacy name still
+  // resolves, and the gateway says which provider it would have used.
+  const legacy = await fetch(base + '/v1/audio/speech', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'sonic-3', input: 'hello', voice: '5c5a-voice' }),
+  });
+  log(legacy.headers.get('x-gateway-provider') === 'cartesia' || legacy.status === 503,
+    'a bare sonic-3 routes to Cartesia', String(legacy.status));
 
   const noMarker = await fetch(base + '/api/settings', {
     method: 'PATCH',

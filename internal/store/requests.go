@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,7 @@ import (
 type RequestRow struct {
 	ID        int64  `json:"id"`
 	TS        int64  `json:"ts"`
+	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	VoiceID   string `json:"voiceId"`
 	Chars     int64  `json:"chars"`
@@ -23,6 +25,10 @@ type RequestRow struct {
 	Status    int    `json:"status"`
 	LatencyMS int64  `json:"latencyMs"`
 	Error     string `json:"error"`
+	// Adjustments lists what the gateway changed to serve the request (a
+	// clamped speed, a dropped control, a substituted voice). Empty means the
+	// request was served exactly as written.
+	Adjustments []string `json:"adjustments,omitempty"`
 }
 
 // UsageStats aggregates the last 24 hours plus today's totals.
@@ -39,17 +45,27 @@ type UsageStats struct {
 	// Last-hour split: synthesis vs. listings. A listing has no characters.
 	SynthRequests1h int64 `json:"synthRequests1h"`
 	ListRequests1h  int64 `json:"listRequests1h"`
+	// Providers splits the last 24 hours by upstream provider, so the console
+	// can show who answered rather than only how much was asked.
+	Providers map[string]ProviderUsage `json:"providers"`
 }
 
-const requestColumns = `id, ts, model, voice_id, chars, bytes, key_id, client_id, status, latency_ms, error`
+// ProviderUsage is one provider's share of the last 24 hours.
+type ProviderUsage struct {
+	Requests int64 `json:"requests"`
+	Success  int64 `json:"success"`
+	Chars    int64 `json:"chars"`
+}
+
+const requestColumns = `id, ts, provider, model, voice_id, chars, bytes, key_id, client_id, status, latency_ms, error, adjustments`
 
 // InsertRequest logs one attempt.
 func (s *Store) InsertRequest(ctx context.Context, row RequestRow) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO requests (ts, model, voice_id, chars, bytes, key_id, client_id, status, latency_ms, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		row.TS, row.Model, row.VoiceID, row.Chars, row.Bytes, row.KeyID, row.ClientID,
-		row.Status, row.LatencyMS, row.Error)
+		INSERT INTO requests (ts, provider, model, voice_id, chars, bytes, key_id, client_id, status, latency_ms, error, adjustments)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.TS, NormalizeProvider(row.Provider), row.Model, row.VoiceID, row.Chars, row.Bytes, row.KeyID, row.ClientID,
+		row.Status, row.LatencyMS, row.Error, joinAdjustments(row.Adjustments))
 	if err != nil {
 		return fmt.Errorf("insert request log: %w", err)
 	}
@@ -135,14 +151,35 @@ func (s *Store) ListRequests(ctx context.Context, limit, offset int) ([]RequestR
 
 	out := make([]RequestRow, 0, limit)
 	for rows.Next() {
-		var row RequestRow
-		if err := rows.Scan(&row.ID, &row.TS, &row.Model, &row.VoiceID, &row.Chars, &row.Bytes,
-			&row.KeyID, &row.ClientID, &row.Status, &row.LatencyMS, &row.Error); err != nil {
+		var (
+			row         RequestRow
+			adjustments string
+		)
+		if err := rows.Scan(&row.ID, &row.TS, &row.Provider, &row.Model, &row.VoiceID, &row.Chars, &row.Bytes,
+			&row.KeyID, &row.ClientID, &row.Status, &row.LatencyMS, &row.Error, &adjustments); err != nil {
 			return nil, 0, fmt.Errorf("scan request row: %w", err)
 		}
+		row.Provider = NormalizeProvider(row.Provider)
+		row.Adjustments = splitAdjustments(adjustments)
 		out = append(out, row)
 	}
 	return out, total, rows.Err()
+}
+
+// joinAdjustments stores the adjustment list in one column. The separator is
+// a unit separator, which cannot appear in an identifier or a note.
+func joinAdjustments(adjustments []string) string {
+	if len(adjustments) == 0 {
+		return ""
+	}
+	return strings.Join(adjustments, "\x1f")
+}
+
+func splitAdjustments(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, "\x1f")
 }
 
 // PruneRequests deletes history older than the cutoff and reports how many
@@ -194,5 +231,36 @@ func (s *Store) Usage(ctx context.Context) (UsageStats, error) {
 		return UsageStats{}, fmt.Errorf("aggregate usage: %w", err)
 	}
 	stats.AvgLatencyMS24h = int64(math.Round(avgLatency.Float64))
+	providers, err := s.providerUsage(ctx, dayAgo)
+	if err != nil {
+		return UsageStats{}, err
+	}
+	stats.Providers = providers
 	return stats, nil
+}
+
+// providerUsage aggregates the same 24-hour window per provider.
+func (s *Store) providerUsage(ctx context.Context, since int64) (map[string]ProviderUsage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT provider,
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(chars), 0)
+		FROM requests WHERE ts >= ?
+		GROUP BY provider`, since)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate usage by provider: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]ProviderUsage, 4)
+	for rows.Next() {
+		var provider string
+		var usage ProviderUsage
+		if err := rows.Scan(&provider, &usage.Requests, &usage.Success, &usage.Chars); err != nil {
+			return nil, fmt.Errorf("scan usage by provider: %w", err)
+		}
+		out[NormalizeProvider(provider)] = usage
+	}
+	return out, rows.Err()
 }

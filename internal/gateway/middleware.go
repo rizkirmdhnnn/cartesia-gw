@@ -57,8 +57,13 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.status == 0 {
 		r.status = status
+		// Only the first WriteHeader may reach the wire. A second call is
+		// either a log line about a harmless double-call or a header that was
+		// meant to land and was silently dropped; forwarding it would let the
+		// net/http connection write "HTTP/1.1 200 OK" into the middle of a
+		// chunked body, which is what corrupted an earlier response here.
+		r.ResponseWriter.WriteHeader(status)
 	}
-	r.ResponseWriter.WriteHeader(status)
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {

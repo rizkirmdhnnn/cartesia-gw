@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// ErrNoKeys means no active key exists; the gateway answers 503 with setup
-// instructions rather than a confusing upstream error.
-var ErrNoKeys = errors.New("no active cartesia api key configured")
+// ErrNoKeys means no active key exists for the requested provider; the gateway
+// answers 503 with setup instructions rather than a confusing upstream error.
+var ErrNoKeys = errors.New("no active api key configured")
 
 // Cooldown bounds. A key that fails is parked with an exponential backoff and
 // released automatically; nothing here is unbounded.
@@ -22,10 +22,16 @@ const (
 	creditCooldown = 30 * time.Minute
 )
 
-// Key is one Cartesia API key plus its failure state.
+// DefaultProvider is what a key gets when the caller does not name one. It is
+// the provider this gateway shipped with, so an upgraded database keeps its
+// existing rows pointing where they always did.
+const DefaultProvider = "cartesia"
+
+// Key is one upstream API key plus its failure state.
 type Key struct {
 	ID            int64  `json:"id"`
 	Label         string `json:"label"`
+	Provider      string `json:"provider"`
 	Secret        string `json:"secret"`
 	IsActive      bool   `json:"isActive"`
 	Priority      int    `json:"priority"`
@@ -46,19 +52,34 @@ func (k Key) Eligible(now time.Time) bool {
 	return k.IsActive && !k.Cooling(now)
 }
 
-const keyColumns = `id, label, secret, is_active, priority, strikes, cooldown_until, last_error, last_used_at, created_at`
+const keyColumns = `id, label, provider, secret, is_active, priority, strikes, cooldown_until, last_error, last_used_at, created_at`
+
+// NormalizeProvider lower-cases a provider name and defaults an empty value.
+func NormalizeProvider(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" {
+		return DefaultProvider
+	}
+	return p
+}
 
 // CreateKey inserts a new key. The secret is unique, so pasting the same key
 // twice is a visible error rather than a silent duplicate that doubles the
 // rotation weight.
 func (s *Store) CreateKey(ctx context.Context, label, secret string) (Key, error) {
+	return s.CreateKeyFor(ctx, DefaultProvider, label, secret)
+}
+
+// CreateKeyFor inserts a key for one provider.
+func (s *Store) CreateKeyFor(ctx context.Context, provider, label, secret string) (Key, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return Key{}, errors.New("api key must not be empty")
 	}
+	provider = NormalizeProvider(provider)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO keys (label, secret, is_active, created_at) VALUES (?, ?, 1, ?)`,
-		strings.TrimSpace(label), secret, time.Now().Unix())
+		`INSERT INTO keys (label, provider, secret, is_active, created_at) VALUES (?, ?, ?, 1, ?)`,
+		strings.TrimSpace(label), provider, secret, time.Now().Unix())
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Key{}, errors.New("that api key is already stored")
@@ -81,30 +102,26 @@ func (s *Store) GetKey(ctx context.Context, id int64) (Key, error) {
 // orderedKeys sorts by priority under the priority strategy, so the
 // dashboard agrees with the picker about which key comes first.
 func (s *Store) OrderedKeys(ctx context.Context, strategy Strategy) ([]Key, error) {
-	query := `SELECT ` + keyColumns + ` FROM keys ORDER BY id DESC`
+	query := `SELECT ` + keyColumns + ` FROM keys ORDER BY provider ASC, id DESC`
 	if strategy == StrategyPriority {
-		query = `SELECT ` + keyColumns + ` FROM keys ORDER BY priority ASC, id ASC`
+		query = `SELECT ` + keyColumns + ` FROM keys ORDER BY provider ASC, priority ASC, id ASC`
 	}
-	rows, err := s.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("list keys: %w", err)
-	}
-	defer rows.Close()
-
-	keys := make([]Key, 0, 4)
-	for rows.Next() {
-		key, err := scanKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, key)
-	}
-	return keys, rows.Err()
+	return s.scanKeys(ctx, query)
 }
 
 // ListKeys returns every key, newest first.
 func (s *Store) ListKeys(ctx context.Context) ([]Key, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+keyColumns+` FROM keys ORDER BY id DESC`)
+	return s.scanKeys(ctx, `SELECT `+keyColumns+` FROM keys ORDER BY provider ASC, id DESC`)
+}
+
+// KeysFor returns the keys of one provider, newest first.
+func (s *Store) KeysFor(ctx context.Context, provider string) ([]Key, error) {
+	return s.scanKeys(ctx, `SELECT `+keyColumns+` FROM keys WHERE provider = ? ORDER BY id DESC`,
+		NormalizeProvider(provider))
+}
+
+func (s *Store) scanKeys(ctx context.Context, query string, args ...any) ([]Key, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list keys: %w", err)
 	}
@@ -148,7 +165,13 @@ func (s *Store) ResetCooldown(ctx context.Context, id int64) error {
 	return nil
 }
 
-// PickKey returns the next key to try and whether it is still cooling down.
+// PickKey returns the next key of the default provider to try and whether it
+// is still cooling down.
+func (s *Store) PickKey(ctx context.Context) (Key, bool, error) {
+	return s.PickKeyFor(ctx, DefaultProvider)
+}
+
+// PickKeyFor returns the next key of one provider.
 //
 // Which key that is depends on the active strategy:
 //
@@ -159,74 +182,81 @@ func (s *Store) ResetCooldown(ctx context.Context, id int64) error {
 //   - random: any key, with parked ones deprioritised.
 //   - sticky: the most recently used key, so one key carries the traffic until
 //     it is parked and the others keep their quota.
+//   - priority: the operator's numeric order, least recently used among
+//     equals.
 //
-// Every strategy falls back to the earliest-released parked key rather than
-// refusing to try anything: a short upstream hiccup should not become an
-// outage. The caller is told the key is cooling down so it can say so.
-func (s *Store) PickKey(ctx context.Context) (Key, bool, error) {
+// Rotation is per provider: a Cartesia request never borrows an ElevenLabs
+// key, because the two are billed and limited separately. Every strategy falls
+// back to the earliest-released parked key rather than refusing to try
+// anything: a short upstream hiccup should not become an outage.
+func (s *Store) PickKeyFor(ctx context.Context, provider string) (Key, bool, error) {
+	provider = NormalizeProvider(provider)
 	strategy, err := s.RotationStrategy(ctx)
 	if err != nil {
 		return Key{}, false, err
 	}
+	now := time.Now()
+	args := []any{provider, now.Unix()}
 	switch strategy {
 	case StrategyRoundRobin:
-		return s.pickRoundRobin(ctx)
+		return s.pickRoundRobin(ctx, provider)
 	case StrategyRandom:
 		return s.pickWith(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1
+			WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, RANDOM()
-			LIMIT 1`, time.Now().Unix())
+			LIMIT 1`, args...)
 	case StrategySticky:
 		return s.pickWith(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1
+			WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, last_used_ms DESC, id DESC
-			LIMIT 1`, time.Now().Unix())
+			LIMIT 1`, args...)
 	case StrategyPriority:
 		return s.pickWith(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1
+			WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, priority ASC, last_used_ms ASC, id ASC
-			LIMIT 1`, time.Now().Unix())
+			LIMIT 1`, args...)
 	default:
 		return s.pickWith(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1
+			WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, last_used_ms ASC, id ASC
-			LIMIT 1`, time.Now().Unix())
+			LIMIT 1`, args...)
 	}
 }
 
-// pickRoundRobin walks ids in order. The cursor is stored, not derived from
-// last_used_at, so a key touched by a health check does not shift the cycle.
-func (s *Store) pickRoundRobin(ctx context.Context) (Key, bool, error) {
+// pickRoundRobin walks ids in order within one provider. The cursor is stored
+// per provider, not derived from last_used_at, so a key touched by a lookup
+// does not shift the cycle.
+func (s *Store) pickRoundRobin(ctx context.Context, provider string) (Key, bool, error) {
 	now := time.Now()
-	cursor, err := s.rotationCursor(ctx)
+	cursor, err := s.rotationCursor(ctx, provider)
 	if err != nil {
 		return Key{}, false, err
 	}
 
 	key, err := s.queryKey(ctx, `
 		SELECT `+keyColumns+` FROM keys
-		WHERE is_active = 1 AND cooldown_until <= ? AND id > ?
+		WHERE provider = ? AND is_active = 1 AND cooldown_until <= ? AND id > ?
 		ORDER BY id
-		LIMIT 1`, now.Unix(), cursor)
+		LIMIT 1`, provider, now.Unix(), cursor)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Wrap: the next key is the first one, skipping parked keys.
 		key, err = s.queryKey(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1 AND cooldown_until <= ?
+			WHERE provider = ? AND is_active = 1 AND cooldown_until <= ?
 			ORDER BY id
-			LIMIT 1`, now.Unix())
+			LIMIT 1`, provider, now.Unix())
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		// Everything is parked. Take the one released soonest.
 		key, err = s.queryKey(ctx, `
 			SELECT `+keyColumns+` FROM keys
-			WHERE is_active = 1
+			WHERE provider = ? AND is_active = 1
 			ORDER BY cooldown_until ASC, id ASC
-			LIMIT 1`)
+			LIMIT 1`, provider)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, false, ErrNoKeys
@@ -235,7 +265,7 @@ func (s *Store) pickRoundRobin(ctx context.Context) (Key, bool, error) {
 		return Key{}, false, err
 	}
 
-	if err := s.SetSetting(ctx, settingRotationCursor, strconv.FormatInt(key.ID, 10)); err != nil {
+	if err := s.SetSetting(ctx, rotationCursorKey(provider), strconv.FormatInt(key.ID, 10)); err != nil {
 		return Key{}, false, err
 	}
 	return s.finishPick(ctx, key, now)
@@ -314,82 +344,63 @@ func (s *Store) MarkFailure(ctx context.Context, id int64, status int, message s
 	return nil
 }
 
-// KeyView is one row of the routing visualiser: the Cartesia keys plus what
-// the dashboard needs to show where traffic is going. Secret is never
-// populated here.
-type KeyView struct {
-	ID            int64  `json:"id"`
-	Label         string `json:"label"`
-	MaskedSecret  string `json:"maskedSecret"`
-	IsActive      bool   `json:"isActive"`
-	Priority      int    `json:"priority"`
-	Strikes       int    `json:"strikes"`
-	CooldownUntil int64  `json:"cooldownUntil"`
-	Cooling       bool   `json:"cooling"`
-	LastError     string `json:"lastError"`
-	LastUsedAt    int64  `json:"lastUsedAt"`
-	CreatedAt     int64  `json:"createdAt"`
-	// Share is the key's slice of the last 24 hours, Requests24h counts the
-	// requests that actually used it, and Eligible says whether the picker
-	// would consider it right now.
-	Requests24h int64   `json:"requests24h"`
-	Share       float64 `json:"share"`
-	Eligible    bool    `json:"eligible"`
-	// NextUp is true for the key the current strategy would pick next. It is
-	// a live preview from the same query the picker runs, without touching
-	// last_used.
-	NextUp bool `json:"nextUp"`
+// PickPreview returns the id of the default provider's key that the active
+// strategy would choose next, computed with the same ORDER BY as PickKey but
+// without recording the use.
+func (s *Store) PickPreview(ctx context.Context) (int64, error) {
+	return s.PickPreviewFor(ctx, DefaultProvider)
 }
 
-// PickPreview returns the id of the key the active strategy would choose next,
-// computed with the same ORDER BY as PickKey but without recording the use.
-// The dashboard uses it to draw "next up" on the routing graph.
-func (s *Store) PickPreview(ctx context.Context) (int64, error) {
+// PickPreviewFor is the per-provider "next up".
+func (s *Store) PickPreviewFor(ctx context.Context, provider string) (int64, error) {
+	provider = NormalizeProvider(provider)
 	strategy, err := s.RotationStrategy(ctx)
 	if err != nil {
 		return 0, err
+	}
+	if strategy == StrategyRoundRobin {
+		return s.previewRoundRobin(ctx, provider)
 	}
 	now := time.Now().Unix()
 	var sqlText string
 	switch strategy {
 	case StrategySticky:
-		sqlText = `SELECT id FROM keys WHERE is_active = 1
+		sqlText = `SELECT id FROM keys WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, last_used_ms DESC, id DESC LIMIT 1`
 	case StrategyRandom:
-		sqlText = `SELECT id FROM keys WHERE is_active = 1
+		sqlText = `SELECT id FROM keys WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, id LIMIT 1`
-	case StrategyRoundRobin:
-		return s.previewRoundRobin(ctx)
 	case StrategyPriority:
-		sqlText = `SELECT id FROM keys WHERE is_active = 1
+		sqlText = `SELECT id FROM keys WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, priority ASC, last_used_ms ASC, id ASC LIMIT 1`
 	default:
-		sqlText = `SELECT id FROM keys WHERE is_active = 1
+		sqlText = `SELECT id FROM keys WHERE provider = ? AND is_active = 1
 			ORDER BY (cooldown_until <= ?) DESC, last_used_ms ASC, id ASC LIMIT 1`
 	}
 	var id int64
-	err = s.db.QueryRowContext(ctx, sqlText, now).Scan(&id)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, sqlText, provider, now).Scan(&id); err != nil {
 		return 0, nil // no keys: nothing is next
 	}
 	return id, nil
 }
 
 // previewRoundRobin mirrors pickRoundRobin's two-step walk.
-func (s *Store) previewRoundRobin(ctx context.Context) (int64, error) {
+func (s *Store) previewRoundRobin(ctx context.Context, provider string) (int64, error) {
 	now := time.Now().Unix()
-	cursor, err := s.rotationCursor(ctx)
+	cursor, err := s.rotationCursor(ctx, provider)
 	if err != nil {
 		return 0, err
 	}
 	var id int64
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM keys
-		WHERE is_active = 1 AND cooldown_until <= ? AND id > ? ORDER BY id LIMIT 1`, now, cursor).Scan(&id)
+		WHERE provider = ? AND is_active = 1 AND cooldown_until <= ? AND id > ? ORDER BY id LIMIT 1`,
+		provider, now, cursor).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM keys
-		WHERE is_active = 1 AND cooldown_until <= ? ORDER BY id LIMIT 1`, now).Scan(&id)
+		WHERE provider = ? AND is_active = 1 AND cooldown_until <= ? ORDER BY id LIMIT 1`,
+		provider, now).Scan(&id)
 	if err != nil {
 		return 0, nil
 	}
@@ -415,22 +426,45 @@ type KeyStats struct {
 	Total   int `json:"total"`
 	Active  int `json:"active"`
 	Cooling int `json:"cooling"`
+	// Providers is the same count split by provider, for the console's
+	// per-provider segments.
+	Providers map[string]ProviderStats `json:"providers"`
+}
+
+// ProviderStats is one provider's key count.
+type ProviderStats struct {
+	Total   int `json:"total"`
+	Active  int `json:"active"`
+	Cooling int `json:"cooling"`
 }
 
 // CountKeys summarises key state.
 func (s *Store) CountKeys(ctx context.Context) (KeyStats, error) {
-	var stats KeyStats
-	now := time.Now().Unix()
-	err := s.db.QueryRowContext(ctx, `
-		SELECT
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT provider,
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN is_active = 1 AND cooldown_until > ? THEN 1 ELSE 0 END), 0)
-		FROM keys`, now).Scan(&stats.Total, &stats.Active, &stats.Cooling)
+		FROM keys
+		GROUP BY provider`, time.Now().Unix())
 	if err != nil {
 		return KeyStats{}, fmt.Errorf("count keys: %w", err)
 	}
-	return stats, nil
+	defer rows.Close()
+
+	stats := KeyStats{Providers: map[string]ProviderStats{}}
+	for rows.Next() {
+		var provider string
+		var total, active, cooling int
+		if err := rows.Scan(&provider, &total, &active, &cooling); err != nil {
+			return KeyStats{}, fmt.Errorf("count keys: %w", err)
+		}
+		stats.Total += total
+		stats.Active += active
+		stats.Cooling += cooling
+		stats.Providers[provider] = ProviderStats{Total: total, Active: active, Cooling: cooling}
+	}
+	return stats, rows.Err()
 }
 
 func describe(status int, message string) string {
@@ -460,10 +494,11 @@ func scanKey(row scanner) (Key, error) {
 		key    Key
 		active int
 	)
-	if err := row.Scan(&key.ID, &key.Label, &key.Secret, &active, &key.Priority, &key.Strikes,
+	if err := row.Scan(&key.ID, &key.Label, &key.Provider, &key.Secret, &active, &key.Priority, &key.Strikes,
 		&key.CooldownUntil, &key.LastError, &key.LastUsedAt, &key.CreatedAt); err != nil {
 		return Key{}, err
 	}
 	key.IsActive = active == 1
+	key.Provider = NormalizeProvider(key.Provider)
 	return key, nil
 }

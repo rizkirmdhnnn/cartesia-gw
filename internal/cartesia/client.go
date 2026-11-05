@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/provider"
 )
 
 // apiHost is the only host a preview URL may point at. The URL comes from
@@ -77,6 +79,22 @@ type VoicesPage struct {
 	Data     []json.RawMessage `json:"data"`
 	HasMore  bool              `json:"has_more"`
 	NextPage *string           `json:"next_page"`
+}
+
+// Page decodes the raw entries the provider package forwards.
+func (p VoicesPage) Page() provider.VoicesPage {
+	page := provider.VoicesPage{HasMore: p.HasMore}
+	if p.NextPage != nil {
+		page.NextPage = *p.NextPage
+	}
+	for _, raw := range p.Data {
+		var voice map[string]any
+		if err := json.Unmarshal(raw, &voice); err != nil {
+			continue
+		}
+		page.Data = append(page.Data, voice)
+	}
+	return page
 }
 
 // VoiceRef is the subset the gateway itself needs: the id it addresses a voice

@@ -139,6 +139,19 @@ function chip(label, value, state, hot) {
   </div>`;
 }
 
+// providerChips splits the 24h traffic by upstream, so "who answered" is on
+// the overview rather than only in the key table.
+function providerChips(usage) {
+  const providers = usage.providers || {};
+  const cells = [];
+  for (const provider of overview?.providers || []) {
+    const stats = providers[provider.name] || {};
+    if (!stats.requests) continue;
+    cells.push(chip(provider.label, (stats.requests || 0).toLocaleString(), 'req · 24 jam'));
+  }
+  return cells.join('');
+}
+
 function renderOverview() {
   const u = overview.usage || {};
   const k = overview.keys || {};
@@ -151,6 +164,7 @@ function renderOverview() {
     chip('latensi', `${u.avgLatencyMs24h || 0} ms`, 'rata-rata'),
     chip('keys', `${k.active || 0}/${k.total || 0}`, k.cooling ? `${k.cooling} cooldown` : 'aktif'),
     chip('client', `${overview.clients?.active ?? 0}`, 'key aktif'),
+    providerChips(u),
     chip('versi', overview.version, 'build'),
   ].join('');
 
@@ -172,16 +186,14 @@ async function loadOverview() {
   const controls = overview.controls || {};
 
   if (!$('model').options.length) {
-    $('model').innerHTML = overview.models.map((m) =>
-      `<option value="${escapeHTML(m)}">${escapeHTML(m)}</option>`).join('');
-    $('model').value = prefs.model && overview.models.includes(prefs.model) ? prefs.model : overview.defaultModel;
+    // One picker, grouped by provider. The value is the prefixed id the API
+    // accepts, so a client can copy it straight out of /v1/models.
+    $('model').innerHTML = (overview.providers || []).map((p) =>
+      `<optgroup label="${escapeHTML(p.label)}">${p.models.map((m) =>
+        `<option value="${escapeHTML(m)}">${escapeHTML(m)}</option>`).join('')}</optgroup>`).join('');
+    const known = overview.models || [];
+    $('model').value = prefs.model && known.includes(prefs.model) ? prefs.model : overview.defaultModel;
     $('format').value = prefs.format || 'mp3';
-
-    const [minSpeed, maxSpeed] = controls.speedRange || [0.6, 1.5];
-    $('speed').min = minSpeed; $('speed').max = maxSpeed;
-    const [minVolume, maxVolume] = controls.volumeRange || [0.5, 2];
-    $('volume').min = minVolume; $('volume').max = maxVolume;
-    $('speed').value = prefs.speed ?? 1;
     $('volume').value = prefs.volume ?? 1;
 
     const primary = new Set(controls.primaryEmotions || []);
@@ -193,11 +205,67 @@ async function loadOverview() {
       + primaryOptions.map((e) => `<option value="${e}">${e}</option>`).join('')
       + (restOptions.length ? `<optgroup label="lainnya">${restOptions.map((e) => `<option value="${e}">${e}</option>`).join('')}</optgroup>` : '');
     $('emotion').value = prefs.emotion || '';
+
+    $('defaultVoiceCartesia').value = providerEntry('cartesia')?.defaultVoice || '';
+    $('defaultVoiceElevenlabs').value = providerEntry('elevenlabs')?.defaultVoice || '';
   }
-  updateRangeOutputs();
+  syncModelControls(prefs);
+  showSegments();
   renderOverview();
   renderRotation();
   updateCurl();
+}
+
+// renderKeySegments draws the key page's provider filter with fresh counts.
+function renderKeySegments(current) {
+  const providerNames = ['', ...(overview?.providers || []).map((p) => p.name)];
+  renderSegments($('keyProviderSegments'), providerNames, current, onPickKeyProvider);
+}
+
+// onPickKeyProvider is named so the segment wiring can re-create itself.
+function onPickKeyProvider(value) {
+  keyProviderFilter = value;
+  renderKeySegments(value);
+  loadKeys().catch(() => { /* the next refresh retries */ });
+}
+
+// providerEntry finds a provider's console description.
+function providerEntry(name) {
+  return (overview?.providers || []).find((p) => p.name === name);
+}
+
+// syncModelControls adapts the control panel to the model that is selected:
+// the speed range is the provider's own, and a control the provider does not
+// have is hidden rather than offered and ignored.
+function syncModelControls(prefs) {
+  const selected = $('model').value;
+  const provider = modelProvider(selected);
+  const entry = providerEntry(provider);
+  if (entry && entry.voiceShape === 'uuid') {
+    $('langFilter').placeholder = 'Bahasa (en, id, es-MX)';
+  }
+  const ranges = rangesFor(provider);
+  applyRange($('speed'), $('speedOut'), ranges.speed, prefs?.speed ?? num('speed'));
+  if (ranges.volume) {
+    $('volumeField').hidden = false;
+    applyRange($('volume'), $('volumeOut'), ranges.volume, prefs?.volume ?? num('volume'));
+  } else {
+    $('volumeField').hidden = true;
+  }
+  $('emotionField').hidden = false;
+  $('speedRangeHint').textContent = `${ranges.speed[0]}–${ranges.speed[1]}`;
+}
+
+// applyRange sets the slider bounds and keeps the current value a step inside
+// them, so switching to a provider with narrower limits cannot leave the
+// thumb outside the track.
+function applyRange(input, output, bounds, preferred) {
+  const [min, max] = bounds;
+  input.min = min;
+  input.max = max;
+  const value = Math.min(max, Math.max(min, Number(preferred) || 1));
+  input.value = value;
+  output.textContent = Number(value).toFixed(2);
 }
 
 function renderRotation() {
@@ -241,14 +309,31 @@ function voiceQuery(reset) {
   if (q) params.set('q', q);
   if (lang) params.set('language', lang);
   if (gender) params.set('gender', gender);
+  if (voiceProviderFilter) params.set('provider', voiceProviderFilter);
+  // Each provider documents a different page size; the server clamps.
   params.set('limit', '50');
   if (!reset && voiceState.cursor) params.set('starting_after', voiceState.cursor);
   return params;
 }
 
+// voiceLocale reads the locale from either provider's voice object.
 function voiceLocale(v) {
   const accent = Array.isArray(v.accents) && v.accents[0];
-  return (accent && accent.locale) || v.language || '';
+  if (accent && accent.locale) return accent.locale;
+  if (v.language) return v.language;
+  const labels = v.labels || {};
+  return labels.language || labels.accent || '';
+}
+
+// voiceID is the id whichever provider produced the entry: Cartesia uses
+// "id", ElevenLabs its own "voice_id".
+function voiceID(v) {
+  return v.voice_id || v.id || '';
+}
+
+function voiceSelected(v) {
+  const current = voiceState.selected;
+  return Boolean(current && current.provider === v.provider && voiceID(current) === voiceID(v));
 }
 
 function renderVoices() {
@@ -257,23 +342,28 @@ function renderVoices() {
     list.innerHTML = '<p class="empty">Tidak ada voice yang cocok. Coba hapus filter atau muat ulang.</p>';
   } else {
     list.innerHTML = voiceState.items.map((v) => {
-      const selected = v.id === voiceState.selected?.id;
+      const id = voiceID(v);
+      const labels = v.labels || {};
       const tags = [
         voiceLocale(v) ? `<span class="tag">${escapeHTML(voiceLocale(v))}</span>` : '',
-        v.gender ? `<span class="tag">${escapeHTML(v.gender.replace('_', ' '))}</span>` : '',
+        (v.gender || labels.gender) ? `<span class="tag">${escapeHTML(String(v.gender || labels.gender).replace('_', ' '))}</span>` : '',
         v.is_pro ? '<span class="tag tag-pro">pro</span>' : '',
         v.is_owner ? '<span class="tag">milik sendiri</span>' : '',
+        v.category && v.category !== 'premade' ? `<span class="tag">${escapeHTML(v.category)}</span>` : '',
+        providerTag(v.provider),
       ].join('');
-      const desc = v.tagline || v.description || '';
-      return `<div class="voice-card" role="option" tabindex="0" data-id="${escapeHTML(v.id)}"
-                   aria-selected="${selected ? 'true' : 'false'}"
-                   title="${escapeHTML(v.name || v.id)}">
-        <button class="play-btn" data-play="${escapeHTML(v.id)}" title="Putar contoh${desc ? ' — ' + escapeHTML(desc) : ''}">▶</button>
+      const desc = v.tagline || v.description || v.labels?.description || '';
+      const shape = v.provider === 'elevenlabs' ? 'voice id ElevenLabs' : 'voice id Cartesia';
+      return `<div class="voice-card" role="option" tabindex="0"
+                   data-provider="${escapeHTML(v.provider || '')}" data-id="${escapeHTML(id)}" data-voice-key="${escapeHTML(v.provider + '|' + id)}"
+                   aria-selected="${voiceSelected(v) ? 'true' : 'false'}"
+                   title="${escapeHTML(v.name || id)}">
+        <button class="play-btn" data-play-provider="${escapeHTML(v.provider || '')}" data-play="${escapeHTML(id)}" title="Putar contoh${desc ? ' — ' + escapeHTML(desc) : ''}">▶</button>
         <span class="vc-text">
-          <span class="vc-name">${escapeHTML(v.name || v.id)}</span>
-          <span class="vc-id" title="Voice ID Cartesia">
-            <code>${escapeHTML(v.id)}</code>
-            <button class="vc-copy" type="button" data-copy="${escapeHTML(v.id)}" title="Salin voice ID">salin</button>
+          <span class="vc-name">${escapeHTML(v.name || id)}</span>
+          <span class="vc-id" title="${escapeHTML(shape)}">
+            <code>${escapeHTML(id)}</code>
+            <button class="vc-copy" type="button" data-copy="${escapeHTML(id)}" title="Salin ${escapeHTML(shape)}">salin</button>
           </span>
           <span class="vc-meta">${tags}</span>
           ${desc ? `<span class="vc-desc">${escapeHTML(desc)}</span>` : ''}
@@ -302,14 +392,27 @@ async function loadVoices(reset) {
     const page = body?.data || [];
     voiceState.items = reset ? page : voiceState.items.concat(page);
     const last = voiceState.items[voiceState.items.length - 1];
-    voiceState.cursor = body?.next_page || (last ? last.id : null);
+    voiceState.cursor = body?.next_page || (last ? `${last.provider || ''}|${voiceID(last)}` : null);
     voiceState.hasMore = Boolean(body?.has_more) && Boolean(voiceState.cursor);
-    const remembered = loadPrefs().voice;
-    if (!voiceState.selected && remembered) {
-      voiceState.selected = voiceState.items.find((v) => v.id === remembered) || null;
+    const prefs = loadPrefs();
+    if (!voiceState.selected && prefs.voice) {
+      // The saved preference is provider+id, because two providers can share
+      // a name and only the pair identifies a voice.
+      voiceState.selected = voiceState.items.find((v) =>
+        `${v.provider || ''}|${voiceID(v)}` === prefs.voice) || null;
+    }
+    if (voiceState.selected && prefs.voice) {
+      // Refresh the selected entry from the new page: a name may have changed.
+      const fresh = voiceState.items.find((v) =>
+        `${v.provider || ''}|${voiceID(v)}` === prefs.voice);
+      if (fresh) voiceState.selected = fresh;
     }
     renderVoices();
     renderSelectedVoice();
+    const warnings = body?.warnings || [];
+    if (warnings.length) {
+      toast('sebagian voice gagal dimuat: ' + warnings.map((w) => providerLabel(w.provider)).join(', '), true);
+    }
   } catch (err) {
     $('voiceList').innerHTML = `<p class="empty">Gagal memuat voice: ${escapeHTML(err.message)}</p>`;
   } finally {
@@ -320,7 +423,7 @@ async function loadVoices(reset) {
 
 function selectVoice(voice) {
   voiceState.selected = voice;
-  savePrefs({ voice: voice.id });
+  savePrefs({ voice: `${voice.provider || ''}|${voiceID(voice)}` });
   renderVoices();
   renderSelectedVoice();
   updateCurl();
@@ -344,9 +447,9 @@ async function copyVoiceID(id, button) {
 
 function renderSelectedVoice() {
   const v = voiceState.selected;
-  $('voiceName').textContent = v ? (v.name || v.id) : 'belum dipilih';
+  $('voiceName').textContent = v ? (v.name || voiceID(v)) : 'belum dipilih';
   $('voiceMeta').textContent = v
-    ? [v.id, voiceLocale(v), v.gender].filter(Boolean).join(' · ')
+    ? [voiceID(v), voiceLocale(v), v.gender || v.labels?.gender, providerLabel(v.provider)].filter(Boolean).join(' · ')
     : 'pilih dari pustaka di sebelah, lalu klik Generate';
   $('voicePlaySelected').disabled = !v;
   $('speak').disabled = !v;
@@ -358,7 +461,7 @@ function setPreviewButton(id, state) {
   if (button) button.dataset.state = state;
 }
 
-async function playPreview(id) {
+async function playPreview(id, provider) {
   if (previewButton && previewButton.dataset.state === 'playing') {
     previewAudio.pause();
     previewButton.dataset.state = '';
@@ -372,7 +475,8 @@ async function playPreview(id) {
   setPreviewButton(id, 'loading');
   if (button) button.textContent = '…';
   try {
-    const res = await api(`/v1/audio/voices/${encodeURIComponent(id)}/preview`);
+    const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    const res = await api(`/v1/audio/voices/${encodeURIComponent(id)}/preview${query}`);
     if (!res.ok) throw new Error(await errorMessage(res));
     const blob = await res.blob();
     previewAudio.src = URL.createObjectURL(blob);
@@ -394,17 +498,19 @@ function requestBody() {
   const body = {
     model: $('model').value,
     input: $('text').value,
-    voice: voiceState.selected?.id,
+    voice: voiceState.selected ? voiceID(voiceState.selected) : undefined,
     response_format: $('format').value,
   };
   const emotion = $('emotion').value;
-  if (emotion) body.emotion = emotion;
+  if (emotion && !$('emotionField').hidden) body.emotion = emotion;
   if (num('speed') !== 1) body.speed = num('speed');
-  if (num('volume') !== 1) body.volume = num('volume');
+  if (!$('volumeField').hidden && num('volume') !== 1) body.volume = num('volume');
   return body;
 }
 
 function streamSupported() {
+  // Only mp3 streams: MediaSource in every browser this targets can append
+  // audio/mpeg, while opus needs an ogg container it does not always know.
   if ($('format').value !== 'mp3') return false;
   try {
     return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
@@ -569,23 +675,23 @@ function download() {
 }
 
 function updateCurl() {
-  const voice = voiceState.selected?.id || '<voice-id>';
+  const voice = voiceState.selected ? voiceID(voiceState.selected) : '<voice-id>';
   const body = {
     model: $('model').value,
     input: 'Halo dunia',
     voice,
     response_format: $('format').value,
   };
-  if ($('emotion').value) body.emotion = $('emotion').value;
+  if ($('emotion').value && !$('emotionField').hidden) body.emotion = $('emotion').value;
   if (num('speed') !== 1) body.speed = num('speed');
-  if (num('volume') !== 1) body.volume = num('volume');
+  if (!$('volumeField').hidden && num('volume') !== 1) body.volume = num('volume');
   const origin = location.origin;
   $('curl').textContent =
     `curl -X POST ${origin}/v1/audio/speech \\\n`
     + `  -H "Authorization: Bearer $CLIENT_API_KEY" \\\n`
     + `  -H "Content-Type: application/json" \\\n`
     + `  -d '${JSON.stringify(body)}' \\\n`
-    + `  --output speech.${$('format').value === 'pcm' ? 'pcm' : $('format').value}`;
+    + `  --output speech.${$('format').value}`;
 }
 
 /* ── 4.E Riwayat (Usage Table with Leading Entity Cells & Spark-Bars) ─────── */
@@ -597,15 +703,21 @@ function renderRequests(body) {
   } else {
     $('usageTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
       + '<th><span class="th-content">' + ICONS.sound + ' Model & Waktu</span></th>'
+      + '<th><span class="th-content">Provider</span></th>'
       + '<th><span class="th-content">' + ICONS.text + ' Voice</span></th>'
       + '<th><span class="th-content">Karakter</span></th>'
       + '<th class="hide-sm"><span class="th-content">Ukuran</span></th>'
       + '<th><span class="th-content">' + ICONS.check + ' Status</span></th>'
       + '<th class="hide-sm"><span class="th-content">' + ICONS.speed + ' Latensi</span></th>'
-      + '<th class="hide-sm"><span class="th-content">' + ICONS.warn + ' Error</span></th>'
+      + '<th class="hide-sm"><span class="th-content">' + ICONS.warn + ' Catatan</span></th>'
       + '</tr></thead><tbody>'
       + rows.map((r) => {
         const isOk = r.status >= 200 && r.status < 300;
+        const adjustments = Array.isArray(r.adjustments) ? r.adjustments : [];
+        const note = adjustments.length
+          ? `<span class="adjust-note" title="${escapeHTML(adjustments.join(' · '))}">disesuaikan ×${adjustments.length}</span>`
+          : '';
+        const error = r.error ? `<span class="err-text">${escapeHTML(r.error.slice(0, 70))}</span>` : '';
         return `<tr>
           <td>
             <div class="entity-cell">
@@ -618,12 +730,13 @@ function renderRequests(body) {
               </div>
             </div>
           </td>
+          <td>${providerTag(r.provider)}</td>
           <td class="mono" title="${escapeHTML(r.voiceId)}">${escapeHTML(shortID(r.voiceId))}</td>
           <td class="tabular">${(r.chars || 0).toLocaleString()}</td>
           <td class="hide-sm tabular">${r.bytes ? fmtBytes(r.bytes) : '—'}</td>
           <td><span class="pill ${isOk ? 'ok' : 'err bad'}">${r.status}</span></td>
           <td class="hide-sm tabular">${r.latencyMs} ms ${renderSparkBars(r.latencyMs, isOk)}</td>
-          <td class="hide-sm err-text">${escapeHTML((r.error || '').slice(0, 90))}</td>
+          <td class="hide-sm err-text">${note}${error}</td>
         </tr>`;
       }).join('')
       + '</tbody></table></div>';
@@ -649,21 +762,23 @@ function refreshUsage() {
 
 /* ── 4.E API Keys Table with Leading Entity Badges ───────────────────────── */
 function renderKeys(keys) {
-  if (!keys.length) {
-    $('keysTable').innerHTML = '<p class="empty">Belum ada key. Tambahkan satu di atas — '
-      + 'tanpa key, endpoint menjawab 503.</p>';
+  const visible = keyProviderFilter ? keys.filter((k) => (k.provider || 'cartesia') === keyProviderFilter) : keys;
+  if (!visible.length) {
+    $('keysTable').innerHTML = '<p class="empty">Belum ada key untuk provider ini. Tambahkan satu di atas — '
+      + 'tanpa key untuk provider yang diminta, endpoint menjawab 424.</p>';
     return;
   }
   const now = Math.floor(Date.now() / 1000);
   $('keysTable').innerHTML = '<div class="table-wrap"><table><thead><tr>'
     + '<th><span class="th-content">' + ICONS.key + ' Label & ID</span></th>'
+    + '<th><span class="th-content">Provider</span></th>'
     + '<th><span class="th-content">Key</span></th>'
     + '<th><span class="th-content">' + ICONS.check + ' Status</span></th>'
     + '<th class="hide-sm"><span class="th-content">Terakhir dipakai</span></th>'
     + '<th class="hide-sm"><span class="th-content">' + ICONS.warn + ' Error</span></th>'
     + '<th><span class="th-content">Aksi</span></th>'
     + '</tr></thead><tbody>'
-    + keys.map((k) => {
+    + visible.map((k) => {
       const cooling = k.cooldownUntil > now;
       const statusPill = !k.isActive ? '<span class="pill neutral">nonaktif</span>'
         : cooling ? `<span class="pill warn">cooldown ${Math.max(1, Math.ceil((k.cooldownUntil - now) / 60))} m</span>`
@@ -679,6 +794,7 @@ function renderKeys(keys) {
             </div>
           </div>
         </td>
+        <td>${providerTag(k.provider)}</td>
         <td class="mono">${escapeHTML(k.maskedSecret)}</td>
         <td>${statusPill}${k.strikes ? ` <span class="muted tabular">×${k.strikes}</span>` : ''}</td>
         <td class="hide-sm muted tabular">${escapeHTML(fmtTime(k.lastUsedAt))}</td>
@@ -702,13 +818,18 @@ async function addKey() {
   const secret = $('keySecret').value.trim();
   if (!secret) { toast('isi API key dulu', true); return; }
   try {
-    await apiJSON('/api/keys', {
+    const created = await apiJSON('/api/keys', {
       method: 'POST',
-      body: JSON.stringify({ label: $('keyLabel').value.trim(), secret }),
+      body: JSON.stringify({
+        label: $('keyLabel').value.trim(),
+        secret,
+        provider: $('keyProvider').value,
+      }),
     });
     $('keySecret').value = '';
     $('keyLabel').value = '';
-    toast('key tersimpan');
+    $('keyProvider').value = '';
+    toast(`key ${providerLabel(created?.provider)} tersimpan`);
     refreshUsage();
     loadKeys();
   } catch (err) {
@@ -743,6 +864,47 @@ async function keyAction(button) {
   }
 }
 
+/* ── default voices ──────────────────────────────────────────────────────── */
+// saveDefaultVoices stores the fallback voice per provider. The server turns a
+// name into its id, so the setting does not go stale when a voice is renamed.
+async function saveDefaultVoices() {
+  const body = {
+    defaultVoice: {
+      cartesia: $('defaultVoiceCartesia').value.trim(),
+      elevenlabs: $('defaultVoiceElevenlabs').value.trim(),
+    },
+  };
+  try {
+    const saved = await apiJSON('/api/settings', { method: 'PATCH', body: JSON.stringify(body) });
+    for (const provider of overview?.providers || []) {
+      provider.defaultVoice = saved?.defaultVoice?.[provider.name] || '';
+    }
+    $('defaultVoiceCartesia').value = saved?.defaultVoice?.cartesia || '';
+    $('defaultVoiceElevenlabs').value = saved?.defaultVoice?.elevenlabs || '';
+    toast('voice default disimpan');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// onPickVoiceProvider narrows the voice library to one provider. The selected
+// voice is kept even when the filter hides it: it is what Generate will send.
+function onPickVoiceProvider(value) {
+  voiceProviderFilter = value;
+  renderSegments($('voiceProviderSegments'), ['', ...(overview?.providers || []).map((p) => p.name)],
+    value, onPickVoiceProvider);
+  loadVoices(true).catch(() => { /* the list reports its own errors */ });
+}
+
+// showSegments draws the provider filters once both the overview and the
+// page wiring are ready. The router calls a page loader before wire() has run,
+// so the voice page's filter would otherwise stay empty.
+function showSegments() {
+  renderKeySegments(keyProviderFilter);
+  renderSegments($('voiceProviderSegments'), ['', ...(overview?.providers || []).map((p) => p.name)],
+    voiceProviderFilter, onPickVoiceProvider);
+}
+
 /* ── wiring ──────────────────────────────────────────────────────────────── */
 function updateTextStats() {
   const text = $('text').value;
@@ -756,7 +918,11 @@ let searchTimer = null;
 function wire() {
   const remember = (patch) => { savePrefs(patch); updateCurl(); };
 
-  $('model').addEventListener('change', () => remember({ model: $('model').value }));
+  $('model').addEventListener('change', () => {
+    remember({ model: $('model').value });
+    syncModelControls();
+    updateCurl();
+  });
   $('format').addEventListener('change', () => remember({ format: $('format').value }));
   $('emotion').addEventListener('change', () => remember({ emotion: $('emotion').value }));
   $('speed').addEventListener('input', () => { updateRangeOutputs(); remember({ speed: num('speed') }); });
@@ -771,20 +937,23 @@ function wire() {
   $('download').addEventListener('click', download);
 
   $('voicePlaySelected').addEventListener('click', () => {
-    if (voiceState.selected) playPreview(voiceState.selected.id);
+    if (voiceState.selected) playPreview(voiceID(voiceState.selected), voiceState.selected.provider);
   });
   $('voiceList').addEventListener('click', (e) => {
     const copy = e.target.closest('[data-copy]');
     if (copy) { e.stopPropagation(); copyVoiceID(copy.dataset.copy, copy); return; }
     const play = e.target.closest('[data-play]');
-    if (play) { e.stopPropagation(); playPreview(play.dataset.play); return; }
+    if (play) { e.stopPropagation(); playPreview(play.dataset.play, play.dataset.playProvider); return; }
     const card = e.target.closest('.voice-card');
-    if (card) selectVoice(voiceState.items.find((v) => v.id === card.dataset.id));
+    if (card) selectVoice(voiceState.items.find((v) => `${v.provider || ''}|${voiceID(v)}` === card.dataset.voiceKey));
   });
   $('voiceList').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const card = e.target.closest('.voice-card');
-    if (card) { e.preventDefault(); selectVoice(voiceState.items.find((v) => v.id === card.dataset.id)); }
+    if (card) {
+      e.preventDefault();
+      selectVoice(voiceState.items.find((v) => `${v.provider || ''}|${voiceID(v)}` === card.dataset.voiceKey));
+    }
   });
   $('voiceSearch').addEventListener('input', () => {
     clearTimeout(searchTimer);
@@ -795,6 +964,8 @@ function wire() {
     searchTimer = setTimeout(() => loadVoices(true), 420);
   });
   $('genderFilter').addEventListener('change', () => loadVoices(true));
+  // Provider filters: keys and voices.
+  showSegments();
   $('voiceRefresh').addEventListener('click', () => loadVoices(true));
   $('loadMore').addEventListener('click', () => loadVoices(false));
 
@@ -826,6 +997,7 @@ function wire() {
   });
   $('accountSave').addEventListener('click', saveAccount);
   $('accountLogoutAll').addEventListener('click', logoutAll);
+  $('defaultVoiceSave').addEventListener('click', saveDefaultVoices);
   $('logoutBtn').addEventListener('click', logout);
   $('logoutTopBtn').addEventListener('click', logout);
   $('routingRefresh').addEventListener('click', () => { loadRouting(); refreshUsage(); });
@@ -938,6 +1110,7 @@ async function boot() {
   updateTextStats();
   renderSelectedVoice();
   await refreshAll();
+  showSegments();
 
   // The probe passed, but a panel can still be refused if the session vanished
   // between the two requests. Route that to the login screen (with a message)

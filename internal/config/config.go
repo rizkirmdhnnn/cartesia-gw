@@ -22,22 +22,27 @@ const (
 	DefaultAddr            = "127.0.0.1:20140"
 	DefaultCartesiaBaseURL = "https://api.cartesia.ai"
 	DefaultCartesiaVersion = "2026-08-14"
-	DefaultRetentionDays   = 30
-	DefaultRequestTimeout  = 5 * time.Minute
-	pruneInterval          = 6 * time.Hour
+	// DefaultElevenLabsBaseURL is the global ElevenLabs endpoint. The regional
+	// ones (api.eu.residency.elevenlabs.io and friends) are reached by setting
+	// this flag.
+	DefaultElevenLabsBaseURL = "https://api.elevenlabs.io"
+	DefaultRetentionDays     = 30
+	DefaultRequestTimeout    = 5 * time.Minute
+	pruneInterval            = 6 * time.Hour
 )
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	Addr            string
-	GatewayToken    string
-	CORSOrigin      string
-	DBPath          string
-	CartesiaBaseURL string
-	CartesiaVersion string
-	Retention       time.Duration
-	RequestTimeout  time.Duration
-	LogLevel        string
+	Addr              string
+	GatewayToken      string
+	CORSOrigin        string
+	DBPath            string
+	CartesiaBaseURL   string
+	CartesiaVersion   string
+	ElevenLabsBaseURL string
+	Retention         time.Duration
+	RequestTimeout    time.Duration
+	LogLevel          string
 	// Rotation is the key-selection strategy used before the dashboard stores
 	// one. Once a value is in the database, this flag is not consulted again.
 	Rotation store.Strategy
@@ -58,6 +63,7 @@ func Load(version string) (*Config, error) {
 	flag.StringVar(&cfg.DBPath, "db", env("CARTESIA_GW_DB", defaultDBPath()), "path to the SQLite database")
 	flag.StringVar(&cfg.CartesiaBaseURL, "cartesia-base-url", env("CARTESIA_GW_BASE_URL", DefaultCartesiaBaseURL), "Cartesia API base URL")
 	flag.StringVar(&cfg.CartesiaVersion, "cartesia-version", env("CARTESIA_GW_VERSION_HEADER", DefaultCartesiaVersion), "value sent as the Cartesia-Version header")
+	flag.StringVar(&cfg.ElevenLabsBaseURL, "elevenlabs-base-url", env("CARTESIA_GW_ELEVENLABS_BASE_URL", DefaultElevenLabsBaseURL), "ElevenLabs API base URL")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("CARTESIA_GW_LOG_LEVEL", "info"), "debug, info, warn or error")
 
 	rotation := flag.String("rotation", env("CARTESIA_GW_ROTATION", store.DefaultStrategy.String()),
@@ -94,6 +100,9 @@ func (c *Config) validate() error {
 	}
 	if strings.TrimSpace(c.CartesiaVersion) == "" {
 		return errors.New("cartesia-version must not be empty; Cartesia rejects requests without the header")
+	}
+	if strings.TrimSpace(c.ElevenLabsBaseURL) == "" {
+		return errors.New("elevenlabs-base-url must not be empty")
 	}
 	if _, err := net.ResolveTCPAddr("tcp", c.Addr); err != nil {
 		return fmt.Errorf("addr %q is not a valid host:port: %w", c.Addr, err)

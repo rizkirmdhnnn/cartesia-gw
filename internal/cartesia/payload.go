@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/rizkirmdhnnn/cartesia-gw/internal/tts"
 )
 
 // Models is the catalogue Cartesia documents today. It drives GET /v1/models
@@ -53,18 +55,9 @@ type GenerationConfig struct {
 }
 
 // SpeechRequest is the OpenAI /v1/audio/speech body a client sends here, plus
-// the two Cartesia controls OpenAI has no equivalent for.
-type SpeechRequest struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice"`
-	ResponseFormat string   `json:"response_format"`
-	Speed          *float64 `json:"speed"`
-	Volume         *float64 `json:"volume"`
-	Emotion        string   `json:"emotion"`
-	Language       string   `json:"language"`
-	Locale         string   `json:"locale"`
-}
+// the two Cartesia controls OpenAI has no equivalent for. It is the same type
+// every provider accepts; see the tts package.
+type SpeechRequest = tts.SpeechRequest
 
 // Translation is a validated request turned into Cartesia's shape.
 type Translation struct {
@@ -74,8 +67,9 @@ type Translation struct {
 	Extension string
 }
 
-// Ranges Cartesia documents. A value outside one is a client error rather
-// than something to clamp silently.
+// Ranges Cartesia documents. A value outside one is clamped at the gateway
+// boundary (see TranslatePlan) so a request is still served; the provider's
+// own limit is what decides the bounds.
 const (
 	MinSpeed  = 0.6
 	MaxSpeed  = 1.5
@@ -103,7 +97,9 @@ var Emotions = []string{
 var PrimaryEmotions = []string{"neutral", "calm", "angry", "content", "sad", "scared"}
 
 // Translate validates an OpenAI-shaped request and maps it onto Cartesia's
-// payload. Every error returned here is the caller's fault (HTTP 400).
+// payload without a provider router in front of it. It is the strict form kept
+// for the package's own contract tests; the gateway routes through
+// TranslatePlan, which clamps and corrects instead of refusing.
 func Translate(req SpeechRequest) (Translation, error) {
 	text := strings.TrimSpace(req.Input)
 	if text == "" {
@@ -161,6 +157,21 @@ func Translate(req SpeechRequest) (Translation, error) {
 		t.Request.GenerationConfig = gen
 	}
 	return t, nil
+}
+
+// PlanToRequest builds the Cartesia /tts/bytes body from a routed plan.
+func PlanToRequest(plan tts.Plan) SynthesisRequest {
+	req := SynthesisRequest{
+		ModelID:      plan.Model,
+		Transcript:   plan.Text,
+		Voice:        plan.Voice,
+		OutputFormat: OutputFormatFor(cartesiaContainer(plan.Container)),
+		Language:     plan.Language,
+	}
+	if gen := generationConfig(plan.Speed, plan.Volume, plan.Emotion); gen != nil {
+		req.GenerationConfig = gen
+	}
+	return req
 }
 
 // generationConfig omits itself entirely when no control was set, so an

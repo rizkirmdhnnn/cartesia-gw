@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -142,18 +141,6 @@ func (s *Store) SetRotationStrategy(ctx context.Context, strategy Strategy) erro
 		return err
 	}
 	return s.SetSetting(ctx, settingRotation, strategy.String())
-}
-
-func (s *Store) rotationCursor(ctx context.Context) (int64, error) {
-	raw, ok, err := s.GetSetting(ctx, settingRotationCursor)
-	if err != nil || !ok {
-		return 0, err
-	}
-	cursor, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, nil
-	}
-	return cursor, nil
 }
 
 // PromptLogin reports whether presentable requests must carry a credential

@@ -67,7 +67,7 @@
             <path d="m21 2-9.6 9.6"></path>
             <path d="m15.5 7.5 3 3L22 7l-3-3"></path>
           </svg>
-          <span class="nav-label">Cartesia Keys</span>
+          <span class="nav-label">Upstream keys</span>
           <span class="nav-badge" id="keysNavBadge">0</span>
         </a>
         <a href="#/clients" class="nav-link" data-page="clients">
@@ -156,7 +156,7 @@
       <header class="page-header">
         <div class="page-title-wrap">
           <h1 class="page-title" id="pageTitle">Voice Synthesis &amp; Key Router</h1>
-          <p class="page-desc" id="pageDesc">High-concurrency Cartesia speech gateway with automated key rotation, rate-limit cooling, and real-time streaming audio.</p>
+          <p class="page-desc" id="pageDesc">Satu endpoint untuk Cartesia dan ElevenLabs: rotasi key otomatis, cooldown saat kena limit, dan audio yang mengalir.</p>
         </div>
         <span class="category-eyebrow" id="pageEyebrow" aria-hidden="true"></span>
       </header>
@@ -269,16 +269,16 @@
 
           <div class="row">
             <div class="field">
-              <label for="speed">Speed <output id="speedOut">1.00</output></label>
+              <label for="speed">Speed <output id="speedOut">1.00</output> <span class="muted" id="speedRangeHint"></span></label>
               <input id="speed" type="range" min="0.6" max="1.5" step="0.05" value="1">
             </div>
-            <div class="field">
+            <div class="field" id="volumeField">
               <label for="volume">Volume <output id="volumeOut">1.00</output></label>
               <input id="volume" type="range" min="0.5" max="2" step="0.05" value="1">
             </div>
           </div>
 
-          <div class="field">
+          <div class="field" id="emotionField">
             <label for="emotion">Emotion</label>
             <select id="emotion"></select>
           </div>
@@ -323,13 +323,14 @@
               </svg>
               <input id="voiceSearch" type="search" placeholder="Cari nama, deskripsi, atau id…" autocomplete="off">
             </div>
-            <input id="langFilter" placeholder="Bahasa (en, id, es-MX)" autocomplete="off" spellcheck="false">
+            <input id="langFilter" placeholder="Bahasa (en, id, es)" autocomplete="off" spellcheck="false">
             <select id="genderFilter">
               <option value="">Semua gender</option>
               <option value="masculine">Masculine</option>
               <option value="feminine">Feminine</option>
               <option value="gender_neutral">Gender neutral</option>
             </select>
+            <div class="segments" id="voiceProviderSegments" role="group" aria-label="Filter provider voice"></div>
           </div>
 
           <div class="voice-list" id="voiceList" role="listbox" aria-label="Daftar voice"></div>
@@ -362,9 +363,9 @@
       </section>
       </section>
 
-      <!-- Page: Cartesia keys (upstream credentials) -->
-      <section class="page" data-page="keys" aria-label="Cartesia keys">
-      <!-- Cartesia Keys Panel: upstream credentials the gateway rotates -->
+      <!-- Page: upstream keys (credentials the gateway rotates, per provider) -->
+      <section class="page" data-page="keys" aria-label="Upstream keys">
+      <!-- Upstream Keys Panel: the credentials the gateway rotates -->
       <section class="panel span" id="keysPanel" aria-labelledby="keysTitle">
         <div class="panel-head">
           <div>
@@ -378,14 +379,26 @@
         </div>
         <p class="muted rotation-hint" id="rotationHint"></p>
 
+        <div class="keys-filter">
+          <div class="segments" id="keyProviderSegments" role="group" aria-label="Filter provider"></div>
+        </div>
+
         <div class="row add-key">
           <div class="field">
             <label for="keyLabel">Label</label>
             <input id="keyLabel" placeholder="mis. cartesia-utama" autocomplete="off">
           </div>
           <div class="field grow">
-            <label for="keySecret">Cartesia API key (sk_car_…)</label>
-            <input id="keySecret" type="password" autocomplete="off">
+            <label for="keySecret">API key upstream</label>
+            <input id="keySecret" type="password" autocomplete="off" placeholder="sk_car_… (Cartesia) atau 32 karakter (ElevenLabs)">
+          </div>
+          <div class="field">
+            <label for="keyProvider">Provider</label>
+            <select id="keyProvider">
+              <option value="">deteksi otomatis</option>
+              <option value="cartesia">Cartesia</option>
+              <option value="elevenlabs">ElevenLabs</option>
+            </select>
           </div>
           <button class="btn primary" id="keyAdd">Tambah</button>
         </div>
@@ -469,6 +482,24 @@
         </div>
         <p class="muted">Mengubah password atau mengeluarkan semua sesi akan mematikan sesi login lain
           serta browser ini.</p>
+
+        <div class="voices-default-head">
+          <span class="category-eyebrow">Fallback Voice</span>
+          <h3>Voice default per provider</h3>
+        </div>
+        <p class="muted account-voices-desc">Dipakai ketika sebuah request tidak menyebut voice, atau menyebut voice milik
+          provider lain. Isi voice ID atau nama voice; nama disimpan sebagai ID.</p>
+        <div class="row add-key" id="defaultVoices">
+          <div class="field grow">
+            <label for="defaultVoiceCartesia">Cartesia</label>
+            <input id="defaultVoiceCartesia" placeholder="UUID voice Cartesia" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field grow">
+            <label for="defaultVoiceElevenlabs">ElevenLabs</label>
+            <input id="defaultVoiceElevenlabs" placeholder="voice id ElevenLabs (20 karakter)" autocomplete="off" spellcheck="false">
+          </div>
+          <button class="btn ghost" id="defaultVoiceSave">Simpan voice default</button>
+        </div>
       </section>
       </section>
 
@@ -534,6 +565,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/auth.js"></script>
 <script src="/router.js"></script>
+<script src="/providers.js"></script>
 <script src="/routing.js"></script>
 <script src="/clients.js"></script>
 <script src="/app.js"></script>
