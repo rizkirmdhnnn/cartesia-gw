@@ -1,0 +1,61 @@
+# Docker deploy for the VPS. Everything here speaks the env vars the binary
+# already reads, so no config file is needed.
+#
+#   make -f Makefile.docker env        # .env with a generated gateway token
+#   make -f Makefile.docker up         # build + start, gateway on 127.0.0.1:20140
+#   make -f Makefile.docker up-tls     # same, with Caddy terminating TLS
+#
+# These targets are kept out of the main Makefile so `make` on Windows still
+# works: this one assumes a POSIX shell (it is meant to run on the VPS).
+
+# The compose project name decides the volume name; pin it so `backup` can
+# find the volume even if the directory is renamed.
+export COMPOSE_PROJECT_NAME ?= cartesia-gw
+
+TLS_FILES := -f docker-compose.yml -f docker-compose.tls.yml --profile tls
+VOLUME    := $(COMPOSE_PROJECT_NAME)_data
+
+.PHONY: help env up down logs ps restart up-tls down-tls logs-tls backup
+
+help:
+	@grep -B0 -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+
+env: ## create .env with a generated gateway token
+	@test -f .env && { echo ".env already exists; edit it instead"; exit 1; } || true
+	@cp .env.example .env
+	@token=$$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'); \
+		grep -v '^CARTESIA_GW_TOKEN=' .env.example > .env; \
+		printf 'CARTESIA_GW_TOKEN=%s\n' "$$token" >> .env; \
+		chmod 600 .env; \
+		echo "wrote .env (chmod 600); add DOMAIN + ACME_EMAIL if you run make up-tls"
+
+up: ## build and start in the background
+	docker compose up -d --build
+
+down: ## stop the stack; the data volume survives
+	docker compose down
+
+logs: ## follow the gateway logs
+	docker compose logs -f cartesia-gw
+
+ps: ## show container state
+	docker compose ps
+
+restart: ## recreate the container to pick up .env changes
+	docker compose up -d --force-recreate
+
+up-tls: ## start with Caddy in front (needs DOMAIN in .env)
+	docker compose $(TLS_FILES) up -d --build
+
+down-tls: ## stop the TLS stack
+	docker compose $(TLS_FILES) down
+
+logs-tls: ## follow Caddy logs (certificate issuance lives here)
+	docker compose $(TLS_FILES) logs -f caddy
+
+backup: ## copy the data volume into ./backups/
+	@mkdir -p backups
+	@docker run --rm -v $(VOLUME):/data:ro -v "$(CURDIR)/backups:/backup" alpine \
+		sh -c 'tar czf /backup/cartesia-gw-$$(date +%Y%m%d-%H%M%S).tgz -C /data .'
+	@ls -lh backups

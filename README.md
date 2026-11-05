@@ -268,6 +268,119 @@ WantedBy=multi-user.target
 
 ---
 
+## Deploy di VPS dengan Docker
+
+Image-nya distroless: binary statis, tanpa shell, berjalan sebagai `nonroot`, dan
+`/cartesia-gw` adalah PID 1 sehingga `docker stop` memicu shutdown anggun.
+
+Berkas pendamping:
+
+| Berkas | Isi |
+|---|---|
+| `docker-compose.yml` | Satu service `cartesia-gw`, port dipublikasikan di loopback, volume `data` untuk SQLite. |
+| `docker-compose.tls.yml` | Lapisan opsional: Caddy 2 dengan sertifikat Let's Encrypt otomatis + HSTS. |
+| `Caddyfile` | Konfigurasi Caddy (`{$DOMAIN}`); `flush_interval -1` supaya audio streaming tidak ditahan buffer. |
+| `Makefile.docker` | Target `env`, `up`, `up-tls`, `logs`, `backup`. Perlu shell POSIX, jadi terpisah dari `Makefile`. |
+| `.env.example` | Semua env yang dibaca compose. `.env` di-gitignore. |
+
+### 1. Siapkan host
+
+Docker Engine + plugin Compose di VPS (Debian/Ubuntu):
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # logout/login agar grup berlaku
+docker compose version          # v2.x
+```
+
+Clone repo, lalu buat `.env` dengan token acak:
+
+```bash
+git clone https://github.com/rizkirmdhnnn/cartesia-gw && cd cartesia-gw
+make -f Makefile.docker env
+```
+
+Atau manual: `cp .env.example .env`, isi `CARTESIA_GW_TOKEN` dengan `openssl rand -hex 32`,
+lalu `chmod 600 .env`.
+
+**`CARTESIA_GW_TOKEN` wajib.** Container listen di `0.0.0.0` di dalam jaringannya, dan binary
+menolak bind non-loopback tanpa token — container akan langsung exit dengan pesan jelas. Token
+dipakai klien sebagai `Authorization: Bearer …` dan juga untuk `/api/*` (dashboard).
+
+### 2. Jalankan
+
+```bash
+make -f Makefile.docker up      # docker compose up -d --build
+make -f Makefile.docker ps
+curl http://127.0.0.1:20140/healthz
+```
+
+Port hanya dipublikasikan ke `127.0.0.1` (`CARTESIA_GW_BIND`), jadi belum bisa diakses dari
+internet. Buka dashboard lewat SSH tunnel:
+
+```bash
+ssh -L 20140:127.0.0.1:20140 user@vps
+# lalu http://127.0.0.1:20140/ di browser Anda
+```
+
+### 3. Ekspos dengan HTTPS (disarankan)
+
+Isi juga `DOMAIN` (dan `ACME_EMAIL`) di `.env`, arahkan DNS A/AAAA ke VPS, buka port 80/443,
+lalu:
+
+```bash
+make -f Makefile.docker up-tls
+```
+
+Perintah itu setara dengan
+`docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile tls up -d --build`.
+Dengan lapisan ini port 20140 **tidak** dipublikasikan lagi (`ports: !reset []`); satu-satunya
+pintu adalah Caddy di 80/443, yang meneruskan ke `cartesia-gw:20140` di jaringan internal compose.
+Sertifikat diambil dan diperpanjang Caddy sendiri (data di volume `caddy_data`).
+
+Klien kemudian memanggil:
+
+```bash
+curl -X POST https://$DOMAIN/v1/audio/speech \
+  -H "Authorization: Bearer $CARTESIA_GW_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"sonic-3","input":"Halo dunia","voice":"<voice-uuid>"}' \
+  --output speech.mp3
+```
+
+Kalau memakai nginx/Traefik yang sudah ada di host, lewati lapisan TLS. Set
+`CARTESIA_GW_BIND=0.0.0.0` **hanya** jika port itu dikunci firewall dari internet
+(`ufw deny 20140` / security group), lalu proxy ke `127.0.0.1:20140`.
+
+### 4. Update, backup, lihat log
+
+```bash
+git pull
+make -f Makefile.docker up          # rebuild + recreate, volume data tetap
+make -f Makefile.docker logs
+make -f Makefile.docker backup      # ./backups/cartesia-gw-<tanggal>.tgz
+```
+
+Database SQLite ada di volume `cartesia-gw_data` (mount `/data`, berisi `data.sqlite` beserta
+`-wal`/`-shm`). Karena itu `backup` menyalin seluruh direktori, bukan satu berkas: menyalin
+`data.sqlite` saja saat WAL belum checkpoint menghasilkan backup yang tertinggal.
+
+**Catatan operasional container:**
+
+- Versi yang ter-embed di binary diambil dari `--build-arg VERSION`, yang di compose diisi
+  `CARTESIA_GW_IMAGE_TAG` (default `.env.example`: `0.1.0`, sama dengan `VERSION`). Kalau
+  `VERSION` naik, naikkan juga nilai itu — atau `CARTESIA_GW_IMAGE_TAG=$(cat VERSION) make -f
+  Makefile.docker up` — supaya `/healthz` melaporkan versi rilis, bukan `dev`.
+- Tidak ada `HEALTHCHECK`: image distroless tidak punya shell atau curl, dan probe `/dev/tcp`
+  butuh bash yang juga tidak ada. Pakai `GET /healthz` dari luar — uptime checker, reverse proxy,
+  atau healthcheck Caddy pada lapisan TLS.
+- `stop_grace_period: 15s` memberi sintesis yang sedang berjalan waktu menyelesaikan sebelum
+  container dihentikan paksa.
+- API key Cartesia tidak masuk ke env atau compose; mereka ditambahkan lewat dashboard dan
+  disimpan di SQLite. Volume `data` karena itu harus diperlakukan sebagai rahasia.
+
+---
+
 ## Struktur
 
 ```
